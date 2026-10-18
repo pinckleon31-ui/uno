@@ -31,6 +31,10 @@ const DUMMY_PASSWORD_SALT = crypto.randomBytes(16).toString('base64url');
 const EMPTY_ROOM_TTL = 12 * 60 * 60 * 1000;
 const CREATOR_TICKET_TTL = 30 * 60 * 1000;
 const ADMIN_SESSION_TTL = 30 * 60 * 1000;
+// Présence en ligne : une personne disparaît de la liste 40 s après son dernier signe de vie.
+const ONLINE_TTL = 40 * 1000;
+const MAX_ONLINE_ENTRIES = 400;
+const BUZZ_SOUNDS = ['cloche', 'alarme', 'tada'];
 const CODE_LOCK_DURATION = 10 * 60 * 1000;
 const MAX_FAILED_CODES = 5;
 const MAX_BODY_SIZE = 16 * 1024;
@@ -56,6 +60,7 @@ let rooms = loadRooms();
 let accounts = loadAccounts();
 const creatorTickets = new Map();
 const adminSessions = new Map();
+const onlinePeople = new Map();
 const failedCodes = new Map();
 const failedAccountLogins = new Map();
 const chatLastSent = new Map();
@@ -434,6 +439,48 @@ function activeAdminSessionKey(token) {
   return key;
 }
 
+function cleanOnlinePeople() {
+  const now = Date.now();
+  for (const [id, person] of onlinePeople) {
+    if (now - person.lastSeenAt > ONLINE_TTL) onlinePeople.delete(id);
+  }
+  if (onlinePeople.size > MAX_ONLINE_ENTRIES) {
+    const oldest = [...onlinePeople.entries()].sort((a, b) => a[1].lastSeenAt - b[1].lastSeenAt);
+    for (const [id] of oldest.slice(0, onlinePeople.size - MAX_ONLINE_ENTRIES)) onlinePeople.delete(id);
+  }
+}
+
+function deviceLabel(userAgent) {
+  const agent = String(userAgent || '');
+  if (/iPad|Tablet/i.test(agent)) return 'Tablette';
+  if (/Mobi|Android|iPhone/i.test(agent)) return 'Téléphone';
+  if (!agent) return 'Appareil inconnu';
+  return 'Ordinateur';
+}
+
+function cleanText(value, maxLength) {
+  return String(value ?? '')
+    .replace(/[\u0000-\u001f\u007f]/g, ' ')
+    .trim()
+    .slice(0, maxLength);
+}
+
+function publicPresence(person) {
+  return {
+    id: person.id,
+    nickname: person.nickname || 'Visiteur',
+    accountNickname: person.accountNickname || '',
+    isAccount: Boolean(person.accountNickname),
+    isAdmin: person.isAdmin === true,
+    activity: person.activity || 'Sur le site',
+    device: person.device || 'Appareil inconnu',
+    firstSeenAt: person.firstSeenAt,
+    lastSeenAt: person.lastSeenAt,
+    buzzPending: Boolean(person.buzz),
+    buzzCount: Number(person.buzzCount) || 0,
+  };
+}
+
 function clientKey(req) {
   const forwardedFor = req.headers['x-forwarded-for'];
   if (typeof forwardedFor === 'string' && forwardedFor.trim()) {
@@ -699,6 +746,63 @@ async function handleApi(req, res, url) {
         lastLoginAt: Number(account.lastLoginAt) || 0,
       },
     });
+  }
+
+  // Signal de présence envoyé régulièrement par chaque navigateur ouvert.
+  if (req.method === 'POST' && pathname === '/api/presence') {
+    const body = await readJson(req);
+    cleanOnlinePeople();
+    const account = findAccountByToken(req.headers['x-account-token']);
+    const requestedId = typeof body.id === 'string' && /^[a-f0-9]{8,48}$/i.test(body.id) ? body.id : '';
+    const id = requestedId || crypto.randomBytes(12).toString('hex');
+    const now = Date.now();
+    const existing = onlinePeople.get(id);
+    const person = existing || { id, firstSeenAt: now, buzz: null, buzzCount: 0 };
+    person.nickname = account ? account.nickname : (cleanText(body.nickname, 24) || 'Visiteur');
+    person.accountNickname = account ? account.nickname : '';
+    person.isAdmin = account ? account.isAdmin === true : false;
+    person.activity = cleanText(body.activity, 60) || 'Sur le site';
+    person.device = deviceLabel(req.headers['user-agent']);
+    person.lastSeenAt = now;
+    onlinePeople.set(id, person);
+
+    // Le son en attente est remis une seule fois, puis consommé.
+    const buzz = person.buzz;
+    person.buzz = null;
+    return sendJson(res, 200, { id, buzz: buzz || null });
+  }
+
+  if (req.method === 'GET' && pathname === '/api/admin/presence') {
+    if (!activeAdminSessionKey(req.headers['x-admin-token'])) {
+      return sendJson(res, 401, { error: 'La session administrateur a expiré. Saisis à nouveau le code.' });
+    }
+    cleanOnlinePeople();
+    const people = [...onlinePeople.values()]
+      .sort((a, b) => b.lastSeenAt - a.lastSeenAt)
+      .map(publicPresence);
+    return sendJson(res, 200, { count: people.length, people, sounds: BUZZ_SOUNDS });
+  }
+
+  const buzzPath = pathname.match(/^\/api\/admin\/presence\/([^/]+)\/buzz$/);
+  if (buzzPath && req.method === 'POST') {
+    if (!activeAdminSessionKey(req.headers['x-admin-token'])) {
+      req.resume();
+      return sendJson(res, 401, { error: 'La session administrateur a expiré. Saisis à nouveau le code.' });
+    }
+    const body = await readJson(req);
+    cleanOnlinePeople();
+    const person = onlinePeople.get(buzzPath[1]);
+    if (!person) {
+      return sendJson(res, 404, { error: 'Cette personne vient de quitter le site.' });
+    }
+    const sound = BUZZ_SOUNDS.includes(body.sound) ? body.sound : BUZZ_SOUNDS[0];
+    person.buzz = {
+      sound,
+      message: cleanText(body.message, 120),
+      at: Date.now(),
+    };
+    person.buzzCount = (Number(person.buzzCount) || 0) + 1;
+    return sendJson(res, 200, { ok: true, nickname: person.nickname, sound });
   }
 
   if (req.method === 'POST' && pathname === '/api/accounts/register') {

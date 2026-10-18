@@ -300,11 +300,9 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .solo-board-overlay span { max-width: 260px; color: rgba(255,255,255,.82); font-size: 10px; line-height: 1.5; }
 .solo-board-overlay .button { min-height: 36px; margin-top: 2px; }
 .snake-board-wrap { position: relative; width: min(100%, 410px); margin-inline: auto; padding: 7px; border: 1px solid #dfe9dc; border-radius: 17px; background: linear-gradient(145deg, #fbfff6, #eff6e9); box-shadow: 0 9px 24px rgba(68,100,53,.08); }
-.snake-board { display: grid; width: 100%; aspect-ratio: 1; grid-template-columns: repeat(20, minmax(0, 1fr)); gap: 2px; overflow: hidden; border-radius: 10px; font-size: 10px; background: #e9f1e4; }
-.snake-cell { display: grid; min-width: 0; aspect-ratio: 1; place-items: center; border-radius: 3px; color: #ef7167; font-size: inherit; line-height: 1; }
-.snake-cell.is-body { background: linear-gradient(145deg, #7acb87, #4aa967); box-shadow: inset 0 1px 2px rgba(255,255,255,.45); }
-.snake-cell.is-head { z-index: 1; border-radius: 35%; background: linear-gradient(145deg, #399b61, #267c4c); box-shadow: 0 1px 4px rgba(26,88,51,.3); }
-.snake-cell.is-food { color: #ef7167; font-size: 1.32em; text-shadow: 0 1px 3px rgba(199,76,66,.25); }
+.snake-canvas { display: block; width: 100%; height: auto; border-radius: 10px; background: #edf5e6; touch-action: none; }
+.solo-board-overlay.is-ready { background: rgba(31,48,33,.52); }
+.solo-board-overlay.is-ready strong { font-size: 1.05rem; }
 .snake-controls { display: grid; width: min(100%, 210px); grid-template-columns: repeat(3, 42px); justify-content: center; gap: 5px; margin-inline: auto; }
 .snake-control-spacer { width: 42px; height: 42px; }
 .solo-direction-button { display: grid; width: 42px; height: 42px; place-items: center; border: 1px solid #e5e2f2; border-radius: 11px; background: #fff; color: #6558c8; font-size: 19px; font-weight: 800; cursor: pointer; transition: transform .14s, background .14s, box-shadow .14s; }
@@ -516,6 +514,27 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .admin-account-details > strong { display: flex; align-items: center; gap: 7px; overflow: hidden; color: #34324d; font-size: 11px; font-weight: 900; text-overflow: ellipsis; white-space: nowrap; }
 .admin-account-details > small { color: #898797; font-size: 8px; line-height: 1.4; }
 .admin-role-badge { display: inline-flex; align-items: center; border-radius: 5px; padding: 3px 5px; background: #eeeaff; color: #6155bd; font-size: 7px; letter-spacing: .05em; }
+.admin-section-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin: 22px 0 6px; }
+.admin-section-head h3 { margin: 0; font-size: .96rem; font-weight: 800; letter-spacing: -.01em; color: #2b2850; }
+.admin-section-hint { margin: 0 0 10px; color: #6f6b89; font-size: .82rem; }
+.admin-presence-counter { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 999px; background: #e9f7ee; color: #2f7d4a; font-size: .76rem; font-weight: 800; }
+.admin-presence-section { padding-bottom: 6px; border-bottom: 1px solid #efedf3; }
+.admin-presence-list { display: grid; gap: 9px; max-height: min(34vh, 320px); overflow: auto; padding-right: 2px; }
+.admin-presence-card { display: grid; grid-template-columns: 14px minmax(0, 1fr) auto; align-items: center; gap: 11px; padding: 11px 13px; border: 1px solid #e9e7f1; border-radius: 13px; background: #fff; }
+.admin-presence-dot { width: 10px; height: 10px; border-radius: 50%; background: #3fb46a; box-shadow: 0 0 0 4px rgba(63,180,106,.16); animation: presence-pulse 1.8s ease-in-out infinite; }
+@keyframes presence-pulse { 0%, 100% { box-shadow: 0 0 0 3px rgba(63,180,106,.16); } 50% { box-shadow: 0 0 0 7px rgba(63,180,106,.07); } }
+.admin-presence-details { display: grid; gap: 2px; min-width: 0; }
+.admin-presence-details strong { display: flex; align-items: center; gap: 7px; font-size: .92rem; }
+.admin-presence-details small { overflow: hidden; color: #6f6b89; font-size: .76rem; text-overflow: ellipsis; white-space: nowrap; }
+.admin-presence-badge { padding: 2px 7px; border-radius: 999px; background: #eceaff; color: #4d44b5; font-size: .62rem; font-weight: 900; letter-spacing: .05em; }
+.admin-presence-badge.is-guest { background: #f2f1f6; color: #6f6b89; }
+.admin-buzz-actions { display: flex; gap: 6px; }
+.admin-buzz-button { display: inline-flex; align-items: center; gap: 5px; padding: 7px 11px; font-size: .76rem; }
+.admin-buzz-button:disabled { opacity: .55; }
+@media (max-width: 640px) {
+  .admin-presence-card { grid-template-columns: 12px minmax(0, 1fr); }
+  .admin-buzz-actions { grid-column: 1 / -1; justify-content: flex-end; }
+}
 .admin-account-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; }
 .admin-account-actions .button { min-height: 33px; padding: 0 6px; font-size: 8px; }
 .admin-logout { width: 100%; }

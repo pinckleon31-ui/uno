@@ -26,6 +26,41 @@
     return shuffled;
   }
 
+  // ---------------------------------------------------------------------------
+  // SNAKE — moteur réécrit de zéro
+  // Règles : une seule case par pas, jamais de diagonale, demi-tour interdit,
+  // file d'attente des virages (deux virages rapides ne sont plus perdus).
+  // ---------------------------------------------------------------------------
+  const SNAKE_MIN_SIZE = 8;
+  const SNAKE_MAX_SIZE = 48;
+  const SNAKE_DIRECTIONS = {
+    up: { x: 0, y: -1 },
+    down: { x: 0, y: 1 },
+    left: { x: -1, y: 0 },
+    right: { x: 1, y: 0 },
+  };
+
+  function snakeDirection(value) {
+    if (!value) return null;
+    if (typeof value === 'string') {
+      const named = SNAKE_DIRECTIONS[value.toLowerCase()];
+      return named ? { ...named } : null;
+    }
+    const x = Math.sign(Number(value.x) || 0);
+    const y = Math.sign(Number(value.y) || 0);
+    // Exactement un déplacement d'une case sur un seul axe : la diagonale est impossible.
+    if (Math.abs(x) + Math.abs(y) !== 1) return null;
+    return { x, y };
+  }
+
+  function sameDirection(first, second) {
+    return Boolean(first && second && first.x === second.x && first.y === second.y);
+  }
+
+  function oppositeDirection(first, second) {
+    return Boolean(first && second && first.x + second.x === 0 && first.y + second.y === 0);
+  }
+
   function randomFreeCell(snake, size, random) {
     const occupied = new Set(snake.map((part) => `${part.x}:${part.y}`));
     const free = [];
@@ -38,50 +73,86 @@
   }
 
   function createSnake({ size = 20, random = Math.random } = {}) {
-    const safeSize = Number.isInteger(size) && size >= 6 ? size : 20;
-    const center = Math.floor(safeSize / 2);
+    const safeSize = Number.isInteger(size) && size >= SNAKE_MIN_SIZE && size <= SNAKE_MAX_SIZE
+      ? size
+      : 20;
+    const row = Math.floor(safeSize / 2);
+    const startX = Math.max(2, Math.floor(safeSize / 3));
     const snake = [
-      { x: center, y: center },
-      { x: center - 1, y: center },
-      { x: center - 2, y: center },
+      { x: startX, y: row },
+      { x: startX - 1, y: row },
+      { x: startX - 2, y: row },
     ];
     return {
       size: safeSize,
       snake,
       direction: { x: 1, y: 0 },
-      nextDirection: { x: 1, y: 0 },
+      queue: [],
       food: randomFreeCell(snake, safeSize, random),
       score: 0,
-      status: 'playing',
+      steps: 0,
+      // 'ready' : la partie attend la première commande du joueur.
+      status: 'ready',
       paused: false,
+      cause: '',
     };
   }
 
-  function setSnakeDirection(state, direction) {
-    if (!state || state.status !== 'playing' || state.paused || !direction) return false;
-    const valid = [[1, 0], [-1, 0], [0, 1], [0, -1]]
-      .some(([x, y]) => x === direction.x && y === direction.y);
-    if (!valid || (direction.x + state.direction.x === 0 && direction.y + state.direction.y === 0)) return false;
-    state.nextDirection = { x: direction.x, y: direction.y };
+  function snakeLastDirection(state) {
+    return state.queue.length ? state.queue[state.queue.length - 1] : state.direction;
+  }
+
+  function setSnakeDirection(state, value) {
+    const next = snakeDirection(value);
+    if (!state || !next) return false;
+    if (state.status !== 'playing' && state.status !== 'ready') return false;
+    const last = snakeLastDirection(state);
+    if (sameDirection(next, last) || oppositeDirection(next, last)) return false;
+    // Deux virages d'avance suffisent : au-delà on ignore, pour ne jamais
+    // effacer un virage déjà demandé par le joueur.
+    if (state.queue.length >= 2) return false;
+    state.queue.push(next);
+    // La première commande lance la partie : le serpent n'avance pas tout seul avant.
+    if (state.status === 'ready') {
+      state.status = 'playing';
+      state.startedAt = Date.now();
+    }
+    return true;
+  }
+
+  function startSnake(state) {
+    if (!state || state.status !== 'ready') return false;
+    state.status = 'playing';
+    state.startedAt = Date.now();
+    return true;
+  }
+
+  function toggleSnakePause(state) {
+    if (!state || (state.status !== 'playing' && state.status !== 'ready')) return false;
+    if (state.status === 'ready') return false;
+    state.paused = !state.paused;
     return true;
   }
 
   function stepSnake(state, random = Math.random) {
     if (!state || state.status !== 'playing' || state.paused) return { moved: false, ate: false };
-    state.direction = { ...state.nextDirection };
+    if (state.queue.length) state.direction = state.queue.shift();
     const head = state.snake[0];
     const nextHead = { x: head.x + state.direction.x, y: head.y + state.direction.y };
     const eating = Boolean(state.food && nextHead.x === state.food.x && nextHead.y === state.food.y);
-    const bodyToCheck = eating ? state.snake : state.snake.slice(0, -1);
-    const collision = nextHead.x < 0 || nextHead.y < 0
-      || nextHead.x >= state.size || nextHead.y >= state.size
-      || bodyToCheck.some((part) => part.x === nextHead.x && part.y === nextHead.y);
-    if (collision) {
+    // Sans pomme, la queue libère sa case : la suivre n'est pas une collision.
+    const body = eating ? state.snake : state.snake.slice(0, -1);
+    const hitWall = nextHead.x < 0 || nextHead.y < 0
+      || nextHead.x >= state.size || nextHead.y >= state.size;
+    const hitSelf = body.some((part) => part.x === nextHead.x && part.y === nextHead.y);
+    if (hitWall || hitSelf) {
       state.status = 'lost';
-      return { moved: true, ate: false, collision: true };
+      state.cause = hitWall ? 'mur' : 'queue';
+      return { moved: true, ate: false, collision: true, cause: state.cause };
     }
 
     state.snake.unshift(nextHead);
+    state.steps += 1;
     if (eating) {
       state.score += 1;
       state.food = randomFreeCell(state.snake, state.size, random);
@@ -351,7 +422,10 @@
   return Object.freeze({
     createSnake,
     setSnakeDirection,
+    startSnake,
+    toggleSnakePause,
     stepSnake,
+    SNAKE_DIRECTIONS,
     create2048,
     add2048Tile,
     move2048,

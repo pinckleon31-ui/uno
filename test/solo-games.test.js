@@ -4,21 +4,85 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const soloGames = require('../public/solo-games');
 
-test('Snake mange une pomme, grandit, bloque le demi-tour et détecte le mur', () => {
+test('Snake attend la première commande avant de bouger', () => {
   const game = soloGames.createSnake({ size: 10, random: () => 0 });
-  game.food = { x: 6, y: 5 };
-  assert.equal(soloGames.setSnakeDirection(game, { x: -1, y: 0 }), false, 'le serpent ne peut pas faire demi-tour sur lui-même');
-  const beforeLength = game.snake.length;
+  assert.equal(game.status, 'ready');
+  assert.equal(soloGames.stepSnake(game).moved, false, 'le serpent ne part pas tout seul');
+  assert.equal(game.snake.length, 3);
+  assert.equal(soloGames.setSnakeDirection(game, 'down'), true);
+  assert.equal(game.status, 'playing');
+  assert.equal(soloGames.stepSnake(game, () => 0).moved, true);
+});
+
+test('Snake n’avance que d’une case sur un seul axe, jamais en diagonale', () => {
+  const game = soloGames.createSnake({ size: 12, random: () => 0 });
+  soloGames.startSnake(game);
+  assert.equal(soloGames.setSnakeDirection(game, { x: 1, y: 1 }), false, 'la diagonale est refusée');
+  assert.equal(soloGames.setSnakeDirection(game, { x: 0, y: 0 }), false, 'l’immobilité est refusée');
+  assert.equal(soloGames.setSnakeDirection(game, { x: 2, y: 0 }), false, 'un saut de deux cases est ramené à une direction valide ou refusé');
+  const visited = [];
+  for (let step = 0; step < 6; step += 1) {
+    soloGames.stepSnake(game, () => 0);
+    visited.push({ ...game.snake[0] });
+  }
+  visited.slice(1).forEach((point, index) => {
+    const previous = visited[index];
+    const distance = Math.abs(point.x - previous.x) + Math.abs(point.y - previous.y);
+    assert.equal(distance, 1, `pas ${index + 1} : le serpent doit avancer d’une seule case`);
+  });
+});
+
+test('Snake garde en mémoire deux virages rapides sans les perdre', () => {
+  const game = soloGames.createSnake({ size: 12, random: () => 0 });
+  const start = { ...game.snake[0] };
+  assert.equal(soloGames.setSnakeDirection(game, 'down'), true);
+  assert.equal(soloGames.setSnakeDirection(game, 'left'), true);
+  assert.equal(soloGames.setSnakeDirection(game, 'up'), false, 'la file est pleine : la commande est ignorée, pas écrasée');
+  soloGames.stepSnake(game, () => 0);
+  assert.deepEqual(game.snake[0], { x: start.x, y: start.y + 1 }, 'premier virage : vers le bas');
+  soloGames.stepSnake(game, () => 0);
+  assert.deepEqual(game.snake[0], { x: start.x - 1, y: start.y + 1 }, 'second virage : vers la gauche');
+});
+
+test('Snake interdit le demi-tour, mange, grandit et détecte les collisions', () => {
+  const game = soloGames.createSnake({ size: 10, random: () => 0 });
+  soloGames.startSnake(game);
+  assert.equal(soloGames.setSnakeDirection(game, { x: -1, y: 0 }), false, 'le demi-tour est interdit');
+
+  game.food = { x: game.snake[0].x + 1, y: game.snake[0].y };
+  const longueur = game.snake.length;
   const result = soloGames.stepSnake(game, () => 0);
   assert.equal(result.ate, true);
   assert.equal(game.score, 1);
-  assert.equal(game.snake.length, beforeLength + 1);
+  assert.equal(game.snake.length, longueur + 1);
 
   game.snake = [{ x: 9, y: 5 }, { x: 8, y: 5 }, { x: 7, y: 5 }];
   game.direction = { x: 1, y: 0 };
-  game.nextDirection = { x: 1, y: 0 };
-  assert.equal(soloGames.stepSnake(game).collision, true);
+  game.queue = [];
+  const mur = soloGames.stepSnake(game);
+  assert.equal(mur.collision, true);
   assert.equal(game.status, 'lost');
+  assert.equal(game.cause, 'mur');
+
+  const serpent = soloGames.createSnake({ size: 10, random: () => 0 });
+  serpent.snake = [{ x: 5, y: 5 }, { x: 4, y: 5 }, { x: 4, y: 4 }, { x: 5, y: 4 }, { x: 6, y: 4 }];
+  serpent.direction = { x: 0, y: -1 };
+  serpent.status = 'playing';
+  serpent.queue = [];
+  serpent.food = { x: 0, y: 0 };
+  assert.equal(soloGames.stepSnake(serpent).collision, true, 'se mordre la queue termine la partie');
+  assert.equal(serpent.cause, 'queue');
+});
+
+test('Snake se met en pause et reprend sans bouger entre-temps', () => {
+  const game = soloGames.createSnake({ size: 10, random: () => 0 });
+  soloGames.startSnake(game);
+  assert.equal(soloGames.toggleSnakePause(game), true);
+  const head = { ...game.snake[0] };
+  assert.equal(soloGames.stepSnake(game).moved, false);
+  assert.deepEqual(game.snake[0], head);
+  soloGames.toggleSnakePause(game);
+  assert.equal(soloGames.stepSnake(game, () => 0).moved, true);
 });
 
 test('2048 fusionne une seule fois chaque tuile et calcule les points', () => {

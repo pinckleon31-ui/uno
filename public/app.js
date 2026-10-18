@@ -14,6 +14,7 @@
   const NICKNAME_STORAGE_KEY = 'recre-jeux-nickname';
   const ACCOUNT_STORAGE_KEY = 'recre-jeux-account-session';
   const LAST_ACCOUNT_NICKNAME_KEY = 'recre-jeux-last-account-nickname';
+  const PRESENCE_ID_KEY = 'recre-jeux-presence-id';
   const SOLO_RECORDS_KEY = 'recre-jeux-solo-records';
   const SOLO_SETTINGS_KEY = 'recre-jeux-solo-settings';
   const CHAT_REACTIONS = ['👏', '😂', '🤔', '🎉', '❤️', '🔥', '🤝', '💡'];
@@ -89,6 +90,10 @@
   let roomsRequestInFlight = false;
   let creatorTicket = '';
   let adminToken = '';
+  let presenceId = readPersistent(PRESENCE_ID_KEY, '');
+  let adminPresence = [];
+  let adminPresenceTimerId = 0;
+  let buzzAudioContext = null;
   let adminAccounts = [];
   let toastTimer = 0;
   let roomTokens = readSession(TOKEN_STORAGE_KEY, {});
@@ -105,7 +110,6 @@
   let soloStartInFlight = false;
   let soloArcadeState = null;
   let soloTickerId = 0;
-  let snakePaintedIndices = new Set();
   let soloMemoryTimeoutId = 0;
   let cheatActionMode = 'force-next-draw';
   let cheatActionInFlight = false;
@@ -278,6 +282,98 @@
       throw new ApiError(data.error || 'Une erreur est survenue. Réessaie.', response.status);
     }
     return data;
+  }
+
+  function currentActivityLabel() {
+    if (dialog.open && dialog.dataset.view === 'solo-game' && soloArcadeState) {
+      return `Jeu solo : ${SOLO_GAME_DETAILS[soloArcadeState.gameId]?.name || soloArcadeState.gameId}`;
+    }
+    if (dialog.open && dialog.dataset.view === 'room') {
+      const title = activeRoomSnapshot?.title || '';
+      return title ? `Partie : ${title}` : 'Dans une partie';
+    }
+    if (dialog.open && dialog.dataset.view === 'admin-panel') return 'Panneau administrateur';
+    if (dialog.open) return 'Navigation sur le site';
+    return 'Sur le site';
+  }
+
+  const BUZZ_PATTERNS = {
+    cloche: { notes: [1319, 988, 1319, 1568], duration: 0.28, type: 'sine', gap: 0.22 },
+    alarme: { notes: [880, 587, 880, 587, 880], duration: 0.2, type: 'square', gap: 0.21 },
+    tada: { notes: [523, 659, 784, 1047], duration: 0.34, type: 'triangle', gap: 0.14 },
+  };
+
+  function playBuzzSound(sound) {
+    const pattern = BUZZ_PATTERNS[sound] || BUZZ_PATTERNS.cloche;
+    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContextClass) return false;
+    try {
+      if (buzzAudioContext && buzzAudioContext.state !== 'closed') buzzAudioContext.close();
+      const context = new AudioContextClass();
+      buzzAudioContext = context;
+      const startAt = context.currentTime + 0.05;
+      pattern.notes.forEach((frequency, index) => {
+        const start = startAt + (index * pattern.gap);
+        const end = start + pattern.duration;
+        const oscillator = context.createOscillator();
+        const gain = context.createGain();
+        oscillator.type = pattern.type;
+        oscillator.frequency.value = frequency;
+        gain.gain.setValueAtTime(0.0001, start);
+        gain.gain.exponentialRampToValueAtTime(0.22, start + 0.02);
+        gain.gain.exponentialRampToValueAtTime(0.0001, end);
+        oscillator.connect(gain);
+        gain.connect(context.destination);
+        oscillator.start(start);
+        oscillator.stop(end + 0.03);
+      });
+      context.resume().catch(() => {});
+      window.setTimeout(() => {
+        if (buzzAudioContext === context && context.state !== 'closed') {
+          context.close().catch(() => {});
+          buzzAudioContext = null;
+        }
+      }, (pattern.notes.length * pattern.gap + pattern.duration) * 1000 + 500);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  function receiveBuzz(buzz) {
+    if (!buzz) return;
+    const played = playBuzzSound(buzz.sound);
+    if (navigator.vibrate) {
+      try { navigator.vibrate([130, 70, 130]); } catch { /* vibration indisponible */ }
+    }
+    const message = String(buzz.message || '').trim();
+    showToast(
+      message
+        ? `🔔 Message de l’organisateur : ${message}`
+        : '🔔 L’organisateur t’envoie un signal sonore !',
+      played ? 'success' : 'info',
+    );
+  }
+
+  async function pingPresence() {
+    try {
+      const data = await api('/api/presence', {
+        method: 'POST',
+        body: {
+          id: presenceId || undefined,
+          nickname: currentAccount?.nickname || readPersistent(LAST_ACCOUNT_NICKNAME_KEY, '') || '',
+          activity: currentActivityLabel(),
+        },
+        headers: accountHeaders(),
+      });
+      if (data.id && data.id !== presenceId) {
+        presenceId = data.id;
+        writePersistent(PRESENCE_ID_KEY, presenceId);
+      }
+      if (data.buzz) receiveBuzz(data.buzz);
+    } catch {
+      /* la présence est secondaire : on réessaiera au prochain battement */
+    }
   }
 
   function setConnection(state, label) {
@@ -541,6 +637,7 @@
 
   function closeDialog() {
     if (dialog.dataset.view === 'solo-game') stopSoloPlay();
+    if (dialog.dataset.view === 'admin-panel') stopAdminPresenceRefresh();
     if (document.fullscreenElement === dialog) {
       document.exitFullscreen().catch(() => {});
     }
@@ -634,6 +731,102 @@
     return new Intl.DateTimeFormat('fr-FR', { dateStyle: 'medium' }).format(date);
   }
 
+  function presenceAge(timestamp) {
+    const seconds = Math.max(0, Math.round((Date.now() - Number(timestamp)) / 1000));
+    if (seconds < 60) return `${seconds} s`;
+    const minutes = Math.floor(seconds / 60);
+    if (minutes < 60) return `${minutes} min`;
+    return `${Math.floor(minutes / 60)} h ${minutes % 60} min`;
+  }
+
+  const BUZZ_BUTTONS = [
+    ['cloche', '🔔', 'Cloche'],
+    ['alarme', '🚨', 'Alarme'],
+    ['tada', '🎉', 'Tada'],
+  ];
+
+  function adminPresenceRows() {
+    if (!adminPresence.length) {
+      return '<div class="admin-empty-state"><span aria-hidden="true">💤</span><strong>Personne en ligne pour le moment.</strong><small>Les personnes qui ouvrent le site apparaissent ici en quelques secondes.</small></div>';
+    }
+    return adminPresence.map((person) => `
+      <article class="admin-presence-card">
+        <span class="admin-presence-dot" aria-hidden="true"></span>
+        <span class="admin-presence-details">
+          <strong>${escapeHtml(person.nickname)}${person.isAccount ? '<span class="admin-presence-badge">COMPTE</span>' : '<span class="admin-presence-badge is-guest">INVITÉ</span>'}${person.isAdmin ? '<span class="admin-role-badge">ADMIN</span>' : ''}</strong>
+          <small>${escapeHtml(person.activity)} · ${escapeHtml(person.device)}</small>
+          <small>En ligne depuis ${escapeHtml(presenceAge(person.firstSeenAt))} · vu il y a ${escapeHtml(presenceAge(person.lastSeenAt))}${person.buzzCount ? ` · ${person.buzzCount} son${person.buzzCount > 1 ? 's' : ''} envoyé${person.buzzCount > 1 ? 's' : ''}` : ''}</small>
+        </span>
+        <span class="admin-buzz-actions">
+          ${BUZZ_BUTTONS.map(([sound, icon, label]) => `<button class="button button-muted admin-buzz-button" type="button" data-admin-buzz="${escapeHtml(person.id)}" data-admin-buzz-sound="${sound}" title="Envoyer le son ${label} à ${escapeHtml(person.nickname)}" aria-label="Envoyer le son ${label} à ${escapeHtml(person.nickname)}"><span aria-hidden="true">${icon}</span>${label}</button>`).join('')}
+        </span>
+      </article>`).join('');
+  }
+
+  function updateAdminPresenceList() {
+    const container = dialogContent.querySelector('[data-admin-presence-list]');
+    if (container) container.innerHTML = adminPresenceRows();
+    const counter = dialogContent.querySelector('[data-admin-presence-count]');
+    if (counter) {
+      counter.textContent = adminPresence.length === 1
+        ? '1 personne connectée en ce moment'
+        : `${adminPresence.length} personnes connectées en ce moment`;
+    }
+  }
+
+  async function refreshAdminPresence() {
+    if (!adminToken || dialog.dataset.view !== 'admin-panel') return;
+    try {
+      const data = await api('/api/admin/presence', { headers: { 'X-Admin-Token': adminToken } });
+      adminPresence = Array.isArray(data.people) ? data.people : [];
+      if (dialog.dataset.view === 'admin-panel') updateAdminPresenceList();
+    } catch (error) {
+      if (error.status === 401) adminToken = '';
+    }
+  }
+
+  function startAdminPresenceRefresh() {
+    stopAdminPresenceRefresh();
+    adminPresenceTimerId = window.setInterval(() => {
+      if (dialog.dataset.view !== 'admin-panel') {
+        stopAdminPresenceRefresh();
+        return;
+      }
+      refreshAdminPresence();
+    }, 5000);
+  }
+
+  function stopAdminPresenceRefresh() {
+    if (adminPresenceTimerId) window.clearInterval(adminPresenceTimerId);
+    adminPresenceTimerId = 0;
+  }
+
+  async function sendAdminBuzz(button) {
+    const personId = button.dataset.adminBuzz;
+    const sound = button.dataset.adminBuzzSound || 'cloche';
+    const person = adminPresence.find((candidate) => candidate.id === personId);
+    button.disabled = true;
+    try {
+      const data = await api(`/api/admin/presence/${encodeURIComponent(personId)}/buzz`, {
+        method: 'POST',
+        body: { sound },
+        headers: { 'X-Admin-Token': adminToken },
+      });
+      showToast(`🔔 Son envoyé à ${data.nickname || person?.nickname || 'cette personne'}.`, 'success');
+      await refreshAdminPresence();
+    } catch (error) {
+      if (error.status === 401) {
+        adminToken = '';
+        adminCodeDialog(error.message);
+        return;
+      }
+      showToast(error.message, 'error');
+      await refreshAdminPresence();
+    } finally {
+      if (button.isConnected) button.disabled = false;
+    }
+  }
+
   function renderAdminPanel(data) {
     adminAccounts = Array.isArray(data.accounts) ? data.accounts : [];
     const count = Number(data.count) || 0;
@@ -660,6 +853,15 @@
         <h2 id="dialog-title">Panneau administrateur.</h2>
         <p class="modal-description">${count} compte${count === 1 ? '' : 's'} joueur${count === 1 ? '' : 's'} enregistré${count === 1 ? '' : 's'}. Renomme un compte, gère son rôle ou supprime-le.</p>
         <p class="admin-panel-message" data-admin-message role="status" aria-live="polite"></p>
+        <section class="admin-presence-section" aria-label="Personnes connectées">
+          <div class="admin-section-head">
+            <h3>En ligne maintenant</h3>
+            <span class="admin-presence-counter" data-admin-presence-count role="status" aria-live="polite"></span>
+          </div>
+          <p class="admin-section-hint">Envoie un son sur l’appareil d’une personne pour attirer son attention. La liste se met à jour toute seule.</p>
+          <div class="admin-presence-list" data-admin-presence-list></div>
+        </section>
+        <div class="admin-section-head"><h3>Comptes joueurs</h3></div>
         <div class="admin-account-list" aria-label="Comptes joueurs">
           ${accountRows || '<div class="admin-empty-state"><span aria-hidden="true">☺</span><strong>Aucun compte pour le moment.</strong><small>Les comptes créés apparaîtront ici.</small></div>'}
         </div>
@@ -674,9 +876,15 @@
     }
     openDialog('admin-panel', '<div class="loading-modal"><span class="loading-spinner" aria-hidden="true"></span>Chargement des comptes…</div>');
     try {
-      const data = await api('/api/admin/accounts', { headers: { 'X-Admin-Token': adminToken } });
+      const [data, presence] = await Promise.all([
+        api('/api/admin/accounts', { headers: { 'X-Admin-Token': adminToken } }),
+        api('/api/admin/presence', { headers: { 'X-Admin-Token': adminToken } }).catch(() => ({ people: [] })),
+      ]);
       if (dialog.dataset.view !== 'admin-panel') return;
+      adminPresence = Array.isArray(presence.people) ? presence.people : [];
       renderAdminPanel(data);
+      updateAdminPresenceList();
+      startAdminPresenceRefresh();
     } catch (error) {
       if (dialog.dataset.view !== 'admin-panel') return;
       if (error.status === 401) {
@@ -2480,36 +2688,33 @@
   }
 
   function snakeMarkup(state) {
-    const occupied = new Map(state.snake.map((part, index) => [`${part.x}:${part.y}`, index]));
-    const cells = [];
-    for (let y = 0; y < state.size; y += 1) {
-      for (let x = 0; x < state.size; x += 1) {
-        const key = `${x}:${y}`;
-        const snakeIndex = occupied.get(key);
-        const isFood = state.food?.x === x && state.food?.y === y;
-        const classes = ['snake-cell'];
-        if (snakeIndex === 0) classes.push('is-head');
-        else if (snakeIndex !== undefined) classes.push('is-body');
-        if (isFood) classes.push('is-food');
-        cells.push(`<span class="${classes.join(' ')}" aria-hidden="true">${isFood ? '●' : ''}</span>`);
-      }
-    }
+    // Le plateau est dessiné sur un canvas : aucune grille CSS, donc aucune
+    // rangée ne peut se décaler (c'était la cause du serpent "en diagonale").
+    const pixels = Math.min(720, Math.max(360, state.size * 22));
     const overlay = state.status === 'lost'
-      ? '<div class="solo-board-overlay"><strong>Fin de partie</strong><span>Ton serpent a rencontré un obstacle.</span><button class="button button-primary" type="button" data-solo-restart>Rejouer</button></div>'
+      ? `<div class="solo-board-overlay"><strong>Fin de partie</strong><span>${state.cause === 'mur' ? 'Ton serpent a heurté le mur.' : 'Ton serpent s’est mordu la queue.'} Score : ${state.score}.</span><button class="button button-primary" type="button" data-solo-restart data-solo-focus="restart">Rejouer</button></div>`
       : (state.status === 'won'
-        ? '<div class="solo-board-overlay"><strong>Incroyable !</strong><span>Tu as rempli toute la grille.</span><button class="button button-primary" type="button" data-solo-restart>Rejouer</button></div>'
-        : (state.paused ? '<div class="solo-board-overlay"><strong>Pause</strong><span>Appuie sur Reprendre quand tu es prêt·e.</span></div>' : ''));
+        ? '<div class="solo-board-overlay"><strong>Incroyable !</strong><span>Tu as rempli toute la grille.</span><button class="button button-primary" type="button" data-solo-restart data-solo-focus="restart">Rejouer</button></div>'
+        : (state.status === 'ready'
+          ? '<div class="solo-board-overlay is-ready"><strong>Prêt ?</strong><span>Flèches, ZQSD, boutons ci-dessous ou glisse ton doigt sur le plateau pour démarrer.</span></div>'
+          : (state.paused ? '<div class="solo-board-overlay"><strong>Pause</strong><span>Appuie sur Reprendre ou sur Espace.</span></div>' : '')));
     const directions = [
-      ['up', '↑', 'Haut', 'snake-up'], ['left', '←', 'Gauche', 'snake-left'],
-      ['down', '↓', 'Bas', 'snake-down'], ['right', '→', 'Droite', 'snake-right'],
+      ['up', '↑', 'haut', 'snake-up'], ['left', '←', 'gauche', 'snake-left'],
+      ['down', '↓', 'bas', 'snake-down'], ['right', '→', 'droite', 'snake-right'],
     ];
+    const pad = (list) => list.map(([direction, symbol, label, focus]) => (
+      `<button type="button" class="solo-direction-button" data-solo-direction="${direction}" data-solo-focus="${focus}" aria-label="Aller vers le ${label}">${symbol}</button>`
+    )).join('');
     return `<div class="solo-arcade-view snake-view">
-      ${soloGameHeader('snake', 'Flèches du clavier ou boutons : mange les fruits, sans te cogner !')}
+      ${soloGameHeader('snake', 'Mange les pommes et évite les murs comme ta propre queue.')}
       ${soloOptionRow()}
-      <div class="solo-score-strip">${soloScorePill('SCORE', state.score, 'score')}${soloScorePill('RECORD', state.best, 'record')}${soloScorePill('VITESSE', soloArcadeState?.variant.label || '—')}</div>
-      <div class="snake-board-wrap" style="width:min(100%, ${Math.min(540, 380 + Math.max(0, state.size - 18) * 11)}px)"><div class="snake-board" data-snake-board="${state.size}" style="${soloBoardStyle(state.size, { gap: state.size >= 24 ? 1 : 2, fontMin: 4, fontScale: 26, fontMax: 12 })}" role="img" aria-label="Serpent : ${state.snake.length} segments, score ${state.score}">${cells.join('')}</div>${overlay}</div>
-      <div class="snake-controls" role="group" aria-label="Commandes du serpent"><span class="snake-control-spacer"></span>${directions.slice(0, 1).map(([direction, symbol, label, focus]) => `<button type="button" class="solo-direction-button" data-solo-direction="${direction}" data-solo-focus="${focus}" aria-label="Aller vers le haut">${symbol}</button>`).join('')}<span class="snake-control-spacer"></span>${directions.slice(1).map(([direction, symbol, label, focus]) => `<button type="button" class="solo-direction-button" data-solo-direction="${direction}" data-solo-focus="${focus}" aria-label="Aller vers ${label.toLocaleLowerCase('fr-FR')}">${symbol}</button>`).join('')}<button type="button" class="solo-pause-button" data-solo-pause data-solo-focus="snake-pause">${state.paused ? 'Reprendre' : 'Pause'}</button></div>
-      <p class="solo-game-help">Utilise les flèches ou ZQSD. Espace met le jeu en pause.</p>
+      <div class="solo-score-strip">${soloScorePill('SCORE', state.score, 'score')}${soloScorePill('RECORD', state.best, 'record')}${soloScorePill('LONGUEUR', state.snake.length, 'length')}${soloScorePill('VITESSE', soloArcadeState?.variant.label || '—')}</div>
+      <div class="snake-board-wrap" style="width:min(100%, ${Math.min(540, 380 + Math.max(0, state.size - 18) * 11)}px)">
+        <canvas class="snake-canvas" data-snake-canvas="${state.size}" width="${pixels}" height="${pixels}" role="img" aria-label="Serpent de ${state.snake.length} segments, score ${state.score}"></canvas>
+        ${overlay}
+      </div>
+      <div class="snake-controls" role="group" aria-label="Commandes du serpent"><span class="snake-control-spacer"></span>${pad(directions.slice(0, 1))}<span class="snake-control-spacer"></span>${pad(directions.slice(1))}<button type="button" class="solo-pause-button" data-solo-pause data-solo-focus="snake-pause"${state.status === 'ready' ? ' disabled' : ''}>${state.paused ? 'Reprendre' : 'Pause'}</button></div>
+      <p class="solo-game-help">Flèches ou ZQSD au clavier, boutons au doigt, ou glisse sur le plateau. Espace met en pause.</p>
       <div class="solo-game-footer"><span>Record sauvegardé sur cet appareil.</span><button type="button" class="button button-muted" data-dialog-close>Quitter le jeu</button></div>
     </div>`;
   }
@@ -2600,9 +2805,7 @@
     const focusKey = focusedControl?.dataset.soloFocus || '';
     dialogContent.innerHTML = soloGameDialog();
     dialogContent.scrollTop = scrollTop;
-    snakePaintedIndices = soloArcadeState.gameId === 'snake'
-      ? new Set(snakeCellClasses(soloArcadeState.game).keys())
-      : new Set();
+    if (soloArcadeState.gameId === 'snake') drawSnakeBoard(soloArcadeState.game);
     if (focusKey) {
       const replacement = Array.from(dialogContent.querySelectorAll('[data-solo-focus]'))
         .find((element) => element.dataset.soloFocus === focusKey && !element.disabled);
@@ -2610,48 +2813,118 @@
     }
   }
 
-  function snakeCellClasses(state) {
-    const painted = new Map();
-    state.snake.forEach((part, index) => {
-      const cellIndex = (part.y * state.size) + part.x;
-      painted.set(cellIndex, index === 0 ? 'snake-cell is-head' : 'snake-cell is-body');
-    });
-    if (state.food) {
-      const foodIndex = (state.food.y * state.size) + state.food.x;
-      painted.set(foodIndex, painted.has(foodIndex) ? `${painted.get(foodIndex)} is-food` : 'snake-cell is-food');
-    }
-    return painted;
+  const SNAKE_COLORS = {
+    board: '#edf5e6',
+    grid: '#e2eed8',
+    body: '#54b06f',
+    bodyDark: '#3f9159',
+    head: '#2f7d4a',
+    eye: '#ffffff',
+    pupil: '#1d3c28',
+    food: '#e4584f',
+    foodLeaf: '#5aa35f',
+  };
+
+  function roundedRect(context, x, y, width, height, radius) {
+    const limit = Math.max(0, Math.min(radius, width / 2, height / 2));
+    context.beginPath();
+    context.moveTo(x + limit, y);
+    context.lineTo(x + width - limit, y);
+    context.quadraticCurveTo(x + width, y, x + width, y + limit);
+    context.lineTo(x + width, y + height - limit);
+    context.quadraticCurveTo(x + width, y + height, x + width - limit, y + height);
+    context.lineTo(x + limit, y + height);
+    context.quadraticCurveTo(x, y + height, x, y + height - limit);
+    context.lineTo(x, y + limit);
+    context.quadraticCurveTo(x, y, x + limit, y);
+    context.closePath();
+    context.fill();
   }
 
-  // Sur une grande grille (Turbo : 784 cases toutes les 78 ms), reconstruire tout
-  // le dialogue à chaque pas rendait le jeu injouable. On ne retouche donc que
-  // les cases qui changent.
+  // Dessin complet du plateau : une seule opération canvas par pas de jeu,
+  // donc aucun ralentissement même en Turbo sur une grande grille.
+  function drawSnakeBoard(state) {
+    const canvas = dialogContent.querySelector('[data-snake-canvas]');
+    if (!canvas || typeof canvas.getContext !== 'function') return false;
+    const context = canvas.getContext('2d');
+    if (!context) return false;
+    const pixels = canvas.width;
+    const cell = pixels / state.size;
+    context.clearRect(0, 0, pixels, pixels);
+    context.fillStyle = SNAKE_COLORS.board;
+    context.fillRect(0, 0, pixels, pixels);
+
+    context.fillStyle = SNAKE_COLORS.grid;
+    for (let y = 0; y < state.size; y += 1) {
+      for (let x = 0; x < state.size; x += 1) {
+        if ((x + y) % 2 === 0) context.fillRect(x * cell, y * cell, cell, cell);
+      }
+    }
+
+    if (state.food) {
+      const centerX = (state.food.x + 0.5) * cell;
+      const centerY = (state.food.y + 0.54) * cell;
+      const radius = cell * 0.34;
+      context.fillStyle = SNAKE_COLORS.food;
+      context.beginPath();
+      context.arc(centerX, centerY, radius, 0, Math.PI * 2);
+      context.fill();
+      context.fillStyle = SNAKE_COLORS.foodLeaf;
+      context.beginPath();
+      context.ellipse(centerX + radius * 0.45, centerY - radius * 0.95, radius * 0.42, radius * 0.22, -0.6, 0, Math.PI * 2);
+      context.fill();
+    }
+
+    const inset = Math.max(0.5, cell * 0.07);
+    const radius = Math.max(1, cell * 0.3);
+    for (let index = state.snake.length - 1; index >= 1; index -= 1) {
+      const part = state.snake[index];
+      context.fillStyle = index % 2 === 0 ? SNAKE_COLORS.body : SNAKE_COLORS.bodyDark;
+      roundedRect(context, (part.x * cell) + inset, (part.y * cell) + inset, cell - (inset * 2), cell - (inset * 2), radius);
+    }
+
+    const head = state.snake[0];
+    context.fillStyle = SNAKE_COLORS.head;
+    roundedRect(context, (head.x * cell) + inset, (head.y * cell) + inset, cell - (inset * 2), cell - (inset * 2), radius * 1.2);
+    if (cell >= 9) {
+      const direction = state.direction || { x: 1, y: 0 };
+      const eyeOffset = cell * 0.22;
+      const eyeRadius = Math.max(1, cell * 0.11);
+      const centerX = (head.x + 0.5) * cell;
+      const centerY = (head.y + 0.5) * cell;
+      const sideX = direction.x === 0 ? eyeOffset : 0;
+      const sideY = direction.y === 0 ? eyeOffset : 0;
+      const frontX = direction.x * eyeOffset * 0.55;
+      const frontY = direction.y * eyeOffset * 0.55;
+      [[-1, 1], [1, -1]].forEach(([signX, signY]) => {
+        const eyeX = centerX + frontX + (sideX * signX) + (sideY === 0 ? 0 : 0);
+        const eyeY = centerY + frontY + (sideY * signY);
+        context.fillStyle = SNAKE_COLORS.eye;
+        context.beginPath();
+        context.arc(eyeX, eyeY, eyeRadius, 0, Math.PI * 2);
+        context.fill();
+        context.fillStyle = SNAKE_COLORS.pupil;
+        context.beginPath();
+        context.arc(eyeX + (direction.x * eyeRadius * 0.35), eyeY + (direction.y * eyeRadius * 0.35), eyeRadius * 0.52, 0, Math.PI * 2);
+        context.fill();
+      });
+    }
+
+    canvas.setAttribute('aria-label', `Serpent de ${state.snake.length} segments, score ${state.score}`);
+    return true;
+  }
+
+  // Mise à jour légère pendant la partie : on redessine le canvas et on
+  // rafraîchit seulement les compteurs, sans reconstruire la fenêtre.
   function paintSnakeFrame(state) {
-    const board = dialogContent.querySelector('[data-snake-board]');
-    if (!board || Number(board.dataset.snakeBoard) !== state.size) return false;
-    const cells = board.children;
-    if (cells.length !== state.size * state.size) return false;
-    const painted = snakeCellClasses(state);
-    snakePaintedIndices.forEach((index) => {
-      if (painted.has(index)) return;
-      const cell = cells[index];
-      if (!cell) return;
-      cell.className = 'snake-cell';
-      if (cell.textContent) cell.textContent = '';
+    const canvas = dialogContent.querySelector('[data-snake-canvas]');
+    if (!canvas || Number(canvas.dataset.snakeCanvas) !== state.size) return false;
+    if (!drawSnakeBoard(state)) return false;
+    const pills = { score: state.score, record: state.best, length: state.snake.length };
+    Object.entries(pills).forEach(([key, value]) => {
+      const target = dialogContent.querySelector(`[data-solo-pill="${key}"]`);
+      if (target && target.textContent !== String(value)) target.textContent = String(value);
     });
-    painted.forEach((className, index) => {
-      const cell = cells[index];
-      if (!cell) return;
-      if (cell.className !== className) cell.className = className;
-      const symbol = className.includes('is-food') ? '●' : '';
-      if (cell.textContent !== symbol) cell.textContent = symbol;
-    });
-    snakePaintedIndices = new Set(painted.keys());
-    board.setAttribute('aria-label', `Serpent : ${state.snake.length} segments, score ${state.score}`);
-    const scoreValue = dialogContent.querySelector('[data-solo-pill="score"]');
-    if (scoreValue && scoreValue.textContent !== String(state.score)) scoreValue.textContent = String(state.score);
-    const recordValue = dialogContent.querySelector('[data-solo-pill="record"]');
-    if (recordValue && recordValue.textContent !== String(state.best)) recordValue.textContent = String(state.best);
     return true;
   }
 
@@ -2666,7 +2939,6 @@
     soloMemoryTimeoutId = 0;
     soloArcadeState = null;
     soloStartInFlight = false;
-    snakePaintedIndices = new Set();
   }
 
   function updateSoloElapsedTime() {
@@ -2704,7 +2976,8 @@
         const state = soloArcadeState;
         if (!state?.game) return stopSoloTicker();
         const { game } = state;
-        if (game.paused) return;
+        // En attente de la première commande ou en pause : rien ne bouge.
+        if (game.status === 'ready' || game.paused) return;
         const result = window.SoloGames.stepSnake(game);
         if (result.ate) game.best = saveSoloRecord('snake', state.variant.id, game.score);
         if (game.status !== 'playing') return finishSoloGame();
@@ -2721,6 +2994,26 @@
         if (soloArcadeState.game.startedAt) renderSoloGame();
       }, 1000);
     }
+  }
+
+  // Un seul point d'entrée pour le clavier, les boutons et le glissement du doigt.
+  function steerSnake(direction) {
+    if (soloArcadeState?.gameId !== 'snake') return false;
+    const { game } = soloArcadeState;
+    const wasReady = game.status === 'ready';
+    if (game.paused) game.paused = false;
+    const changed = window.SoloGames.setSnakeDirection(game, direction);
+    if (wasReady && game.status === 'playing') renderSoloGame();
+    else if (changed) paintSnakeFrame(game);
+    return changed;
+  }
+
+  function handleSnakeSwipe(startPoint, endPoint) {
+    const deltaX = endPoint.x - startPoint.x;
+    const deltaY = endPoint.y - startPoint.y;
+    if (Math.max(Math.abs(deltaX), Math.abs(deltaY)) < 24) return false;
+    if (Math.abs(deltaX) >= Math.abs(deltaY)) return steerSnake(deltaX > 0 ? 'right' : 'left');
+    return steerSnake(deltaY > 0 ? 'down' : 'up');
   }
 
   function toggleSoloSnakePause() {
@@ -2781,11 +3074,7 @@
     }
     const snakeDirection = event.target.closest('[data-solo-direction]');
     if (snakeDirection && soloArcadeState?.gameId === 'snake') {
-      const direction = {
-        up: { x: 0, y: -1 }, down: { x: 0, y: 1 },
-        left: { x: -1, y: 0 }, right: { x: 1, y: 0 },
-      }[snakeDirection.dataset.soloDirection];
-      window.SoloGames.setSnakeDirection(soloArcadeState.game, direction);
+      steerSnake(snakeDirection.dataset.soloDirection);
       return true;
     }
     if (event.target.closest('[data-solo-pause]')) {
@@ -2829,17 +3118,20 @@
     const key = String(event.key || '').toLowerCase();
     if (soloArcadeState.gameId === 'snake') {
       const directions = {
-        arrowup: { x: 0, y: -1 }, w: { x: 0, y: -1 }, z: { x: 0, y: -1 },
-        arrowdown: { x: 0, y: 1 }, s: { x: 0, y: 1 },
-        arrowleft: { x: -1, y: 0 }, a: { x: -1, y: 0 }, q: { x: -1, y: 0 },
-        arrowright: { x: 1, y: 0 }, d: { x: 1, y: 0 },
+        arrowup: 'up', w: 'up', z: 'up',
+        arrowdown: 'down', s: 'down',
+        arrowleft: 'left', a: 'left', q: 'left',
+        arrowright: 'right', d: 'right',
       };
       if (directions[key]) {
         event.preventDefault();
-        window.SoloGames.setSnakeDirection(soloArcadeState.game, directions[key]);
-      } else if (key === ' ' || key === 'spacebar') {
+        steerSnake(directions[key]);
+      } else if (key === ' ' || key === 'spacebar' || key === 'p') {
         event.preventDefault();
         toggleSoloSnakePause();
+      } else if ((key === 'enter' || key === 'r') && soloArcadeState.game.status !== 'playing') {
+        event.preventDefault();
+        startSoloGame('snake', { variantId: soloArcadeState.variant.id, keepDialog: true });
       }
       return;
     }
@@ -3118,6 +3410,12 @@
       return;
     }
 
+    const buzzButton = event.target.closest('[data-admin-buzz]');
+    if (buzzButton) {
+      sendAdminBuzz(buzzButton);
+      return;
+    }
+
     const adminRenameButton = event.target.closest('[data-admin-rename]');
     if (adminRenameButton) {
       renameAdminAccount(adminRenameButton.dataset.adminRename);
@@ -3288,6 +3586,23 @@
   });
 
   document.addEventListener('keydown', soloHandleKeydown);
+
+  let snakeTouchStart = null;
+  document.addEventListener('touchstart', (event) => {
+    if (!event.target.closest?.('[data-snake-canvas]')) return;
+    const touch = event.touches[0];
+    snakeTouchStart = touch ? { x: touch.clientX, y: touch.clientY } : null;
+  }, { passive: true });
+  document.addEventListener('touchmove', (event) => {
+    // Empêche la page de défiler pendant qu'on dirige le serpent au doigt.
+    if (snakeTouchStart && event.target.closest?.('[data-snake-canvas]')) event.preventDefault();
+  }, { passive: false });
+  document.addEventListener('touchend', (event) => {
+    if (!snakeTouchStart) return;
+    const touch = event.changedTouches[0];
+    if (touch) handleSnakeSwipe(snakeTouchStart, { x: touch.clientX, y: touch.clientY });
+    snakeTouchStart = null;
+  });
   document.addEventListener('contextmenu', (event) => {
     const mineCell = event.target.closest?.('[data-mines-row]');
     if (!mineCell || dialog.dataset.view !== 'solo-game' || soloArcadeState?.gameId !== 'demineur') return;
@@ -3348,6 +3663,9 @@
   loadAccountSession();
   loadRooms();
   loadLeaderboard();
+  pingPresence();
+  window.setInterval(pingPresence, 8000);
+  window.addEventListener('focus', pingPresence);
   window.setInterval(loadRooms, 9000);
   window.setInterval(loadLeaderboard, 20_000);
   window.setInterval(heartbeatSessions, 25_000);

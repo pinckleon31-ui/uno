@@ -125,7 +125,15 @@ test('API de bout en bout : code organisateur, lobby, confidentialité, bots et 
   assert.match(script.text, /data-solo-variant/);
   assert.match(script.text, /function soloBoardStyle/);
   assert.match(script.text, /grid-template-columns:repeat\(\$\{columns\}/, 'le nombre de colonnes est écrit en clair dans le style du plateau');
-  assert.match(script.text, /function paintSnakeFrame/, 'le serpent est redessiné case par case');
+  assert.match(script.text, /function paintSnakeFrame/);
+  assert.match(script.text, /data-snake-canvas/, 'le plateau du serpent est un canvas');
+  assert.match(script.text, /function drawSnakeBoard/);
+  assert.match(script.text, /function steerSnake/);
+  assert.match(script.text, /function handleSnakeSwipe/, 'le serpent se dirige aussi au doigt');
+  assert.match(script.text, /\/api\/presence/, 'le navigateur signale sa présence');
+  assert.match(script.text, /function playBuzzSound/);
+  assert.match(script.text, /data-admin-buzz/);
+  assert.match(script.text, /function refreshAdminPresence/);
   assert.match(script.text, /function soloOptionRow/);
   assert.match(script.text, /function snakeInterval/);
   assert.match(script.text, /Mettre le jeu en grand/);
@@ -166,6 +174,9 @@ test('API de bout en bout : code organisateur, lobby, confidentialité, bots et 
   assert.match(stylesheet.text, /\.minesweeper-board/);
   assert.match(stylesheet.text, /\.solo-memory-board/);
   assert.match(stylesheet.text, /\.solo-option-chip/);
+  assert.match(stylesheet.text, /\.snake-canvas/);
+  assert.match(stylesheet.text, /\.admin-presence-card/);
+  assert.match(stylesheet.text, /\.admin-buzz-button/);
   assert.doesNotMatch(stylesheet.text, /repeat\(var\(/, 'une variable dans repeat() décale les rangées sur certains navigateurs');
   assert.doesNotMatch(stylesheet.text, /calc\([^)]*\/\s*var\(/, 'une division par une variable CSS casse les tailles sur certains navigateurs');
   assert.match(stylesheet.text, /\.memory-card-face \{[^}]*color: #332d55/, 'le symbole Memory doit rester lisible sur fond blanc');
@@ -639,4 +650,80 @@ test('seul l’organisateur peut fermer un salon ou arrêter une partie en cours
   });
   assert.equal(stopped.status, 200, 'l’organisateur peut arrêter la partie en cours pour tout le monde');
   assert.deepEqual((await request('/api/rooms')).data.rooms, []);
+});
+
+test('la présence en ligne se déclare, se liste côté admin et reçoit un son', async (t) => {
+  const { request } = await launchServer(t);
+
+  const first = await request('/api/presence', {
+    method: 'POST',
+    body: { nickname: 'Lina', activity: 'Jeu solo : Snake' },
+  });
+  assert.equal(first.status, 200);
+  assert.match(first.data.id, /^[a-f0-9]{8,48}$/i);
+  assert.equal(first.data.buzz, null);
+
+  // Le même navigateur garde son identifiant d'un battement à l'autre.
+  const second = await request('/api/presence', {
+    method: 'POST',
+    body: { id: first.data.id, nickname: 'Lina', activity: 'Sur le site' },
+  });
+  assert.equal(second.data.id, first.data.id);
+
+  const other = await request('/api/presence', { method: 'POST', body: { nickname: 'Tom' } });
+  assert.notEqual(other.data.id, first.data.id);
+
+  const unauthorized = await request('/api/admin/presence');
+  assert.equal(unauthorized.status, 401, 'la liste des personnes connectées est réservée à l’admin');
+
+  const login = await request('/api/admin/login', { method: 'POST', body: { code: TEST_CREATOR_CODE } });
+  assert.equal(login.status, 200);
+  const adminHeaders = { 'X-Admin-Token': login.data.token };
+
+  const list = await request('/api/admin/presence', { headers: adminHeaders });
+  assert.equal(list.status, 200);
+  assert.equal(list.data.count, 2);
+  const lina = list.data.people.find((person) => person.nickname === 'Lina');
+  assert.ok(lina, 'la personne connectée apparaît dans la liste');
+  assert.equal(lina.activity, 'Sur le site');
+  assert.equal(lina.isAccount, false);
+  assert.equal(lina.buzzPending, false);
+
+  const buzzRefused = await request(`/api/admin/presence/${lina.id}/buzz`, {
+    method: 'POST',
+    body: { sound: 'cloche' },
+  });
+  assert.equal(buzzRefused.status, 401, 'impossible d’envoyer un son sans session admin');
+
+  const buzz = await request(`/api/admin/presence/${lina.id}/buzz`, {
+    method: 'POST',
+    body: { sound: 'alarme', message: 'Reviens en classe !' },
+    headers: adminHeaders,
+  });
+  assert.equal(buzz.status, 200);
+  assert.equal(buzz.data.nickname, 'Lina');
+  assert.equal(buzz.data.sound, 'alarme');
+
+  const afterBuzz = await request('/api/admin/presence', { headers: adminHeaders });
+  const linaWaiting = afterBuzz.data.people.find((person) => person.id === lina.id);
+  assert.equal(linaWaiting.buzzPending, true);
+  assert.equal(linaWaiting.buzzCount, 1);
+
+  // Le son n'est remis qu'à la personne visée, une seule fois.
+  const tomPing = await request('/api/presence', { method: 'POST', body: { id: other.data.id } });
+  assert.equal(tomPing.data.buzz, null);
+
+  const delivered = await request('/api/presence', { method: 'POST', body: { id: lina.id, nickname: 'Lina' } });
+  assert.equal(delivered.data.buzz.sound, 'alarme');
+  assert.equal(delivered.data.buzz.message, 'Reviens en classe !');
+
+  const again = await request('/api/presence', { method: 'POST', body: { id: lina.id, nickname: 'Lina' } });
+  assert.equal(again.data.buzz, null, 'le son ne sonne pas en boucle');
+
+  const missing = await request('/api/admin/presence/inconnu/buzz', {
+    method: 'POST',
+    body: { sound: 'cloche' },
+    headers: adminHeaders,
+  });
+  assert.equal(missing.status, 404);
 });
