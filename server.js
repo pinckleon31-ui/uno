@@ -491,7 +491,9 @@ function clientKey(req) {
 
 function safeEqualCode(submittedCode) {
   if (!CREATOR_CODE || typeof submittedCode !== 'string') return false;
-  return sameSecret(submittedCode, CREATOR_CODE);
+  // Les espaces avant/après (copier-coller, correction automatique du clavier)
+  // ne doivent pas faire échouer un code pourtant juste.
+  return sameSecret(submittedCode.trim(), CREATOR_CODE);
 }
 
 function setSecurityHeaders(res) {
