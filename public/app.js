@@ -919,6 +919,34 @@
     adminPresenceTimerId = 0;
   }
 
+  async function sendAdminBuzzAll(button) {
+    button.disabled = true;
+    try {
+      const data = await api('/api/admin/presence/tous/buzz', {
+        method: 'POST',
+        body: { sound: button.dataset.adminBuzzAll || 'mega' },
+        headers: { 'X-Admin-Token': adminToken },
+      });
+      const count = Number(data.count) || 0;
+      showToast(
+        count
+          ? `📢 Sirène très forte envoyée à ${count} personne${count > 1 ? 's' : ''}.`
+          : 'Personne n’est connecté pour le moment.',
+        count ? 'success' : 'info',
+      );
+      await refreshAdminPresence();
+    } catch (error) {
+      if (error.status === 401) {
+        adminToken = '';
+        adminCodeDialog(error.message);
+        return;
+      }
+      showToast(error.message, 'error');
+    } finally {
+      if (button.isConnected) button.disabled = false;
+    }
+  }
+
   async function sendAdminBuzz(button) {
     const personId = button.dataset.adminBuzz;
     const sound = button.dataset.adminBuzzSound || 'cloche';
@@ -981,7 +1009,8 @@
             <h3>En ligne maintenant</h3>
             <span class="admin-presence-counter" data-admin-presence-count role="status" aria-live="polite"></span>
           </div>
-          <p class="admin-section-hint">Envoie un son sur l’appareil d’une personne pour attirer son attention. La liste se met à jour toute seule.</p>
+          <p class="admin-section-hint">Chaque personne a quatre boutons de son. Le bouton rouge <strong>📢 MÉGA</strong> déclenche une sirène très forte avec l’écran qui clignote.</p>
+          <button class="button button-danger admin-buzz-all" type="button" data-admin-buzz-all="mega"><span aria-hidden="true">📢</span> MÉGA à tout le monde</button>
           <div class="admin-presence-list" data-admin-presence-list></div>
         </section>
         <div class="admin-section-head"><h3>Comptes joueurs</h3></div>
@@ -3530,6 +3559,12 @@
     const p4RestartButton = event.target.closest('[data-p4-restart]');
     if (p4RestartButton) {
       performPuissance4Action(p4RestartButton.dataset.p4Restart, 'restart');
+      return;
+    }
+
+    const buzzAllButton = event.target.closest('[data-admin-buzz-all]');
+    if (buzzAllButton) {
+      sendAdminBuzzAll(buzzAllButton);
       return;
     }
 

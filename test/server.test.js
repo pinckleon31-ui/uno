@@ -137,6 +137,8 @@ test('API de bout en bout : code organisateur, lobby, confidentialité, bots et 
   assert.match(script.text, /function flashScreen/);
   assert.match(script.text, /function unlockAudio/, 'le son doit pouvoir être joué même sans interaction récente');
   assert.match(script.text, /data-admin-buzz-sound="\$\{sound\}"/);
+  assert.match(script.text, /data-admin-buzz-all/, 'un bouton envoie la sirène à tout le monde');
+  assert.match(script.text, /MÉGA à tout le monde/);
   assert.match(script.text, /data-admin-buzz/);
   assert.match(script.text, /function refreshAdminPresence/);
   assert.match(script.text, /function soloOptionRow/);
@@ -183,6 +185,8 @@ test('API de bout en bout : code organisateur, lobby, confidentialité, bots et 
   assert.match(stylesheet.text, /\.admin-presence-card/);
   assert.match(stylesheet.text, /\.admin-buzz-button/);
   assert.match(stylesheet.text, /\.buzz-flash/);
+  assert.match(stylesheet.text, /\.admin-buzz-all/);
+  assert.match(stylesheet.text, /\.admin-buzz-actions \{[^}]*flex-wrap: wrap/, 'les boutons de son ne doivent jamais être coupés');
   assert.doesNotMatch(stylesheet.text, /repeat\(var\(/, 'une variable dans repeat() décale les rangées sur certains navigateurs');
   assert.doesNotMatch(stylesheet.text, /calc\([^)]*\/\s*var\(/, 'une division par une variable CSS casse les tailles sur certains navigateurs');
   assert.match(stylesheet.text, /\.memory-card-face \{[^}]*color: #332d55/, 'le symbole Memory doit rester lisible sur fond blanc');
@@ -743,6 +747,19 @@ test('la présence en ligne se déclare, se liste côté admin et reçoit un son
     headers: adminHeaders,
   });
   assert.equal(inconnu.data.sound, 'cloche', 'un son inconnu retombe sur la cloche');
+
+  // Sirène envoyée à tout le monde d'un seul coup.
+  const broadcast = await request('/api/admin/presence/tous/buzz', {
+    method: 'POST',
+    body: { sound: 'mega', message: 'Tout le monde écoute' },
+    headers: adminHeaders,
+  });
+  assert.equal(broadcast.status, 200);
+  assert.equal(broadcast.data.count, 2, 'les deux personnes connectées reçoivent la sirène');
+  const linaBroadcast = await request('/api/presence', { method: 'POST', body: { id: lina.id } });
+  assert.equal(linaBroadcast.data.buzz.sound, 'mega');
+  const tomBroadcast = await request('/api/presence', { method: 'POST', body: { id: other.data.id } });
+  assert.equal(tomBroadcast.data.buzz.message, 'Tout le monde écoute');
 
   const missing = await request('/api/admin/presence/inconnu/buzz', {
     method: 'POST',

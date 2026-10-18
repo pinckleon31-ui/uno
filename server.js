@@ -793,18 +793,26 @@ async function handleApi(req, res, url) {
     }
     const body = await readJson(req);
     cleanOnlinePeople();
+    const sound = BUZZ_SOUNDS.includes(body.sound) ? body.sound : BUZZ_SOUNDS[0];
+    const buzz = { sound, message: cleanText(body.message, 120), at: Date.now() };
+
+    // « tous » : la même alerte part sur tous les appareils connectés.
+    if (buzzPath[1] === 'tous') {
+      const targets = [...onlinePeople.values()];
+      targets.forEach((target) => {
+        target.buzz = { ...buzz };
+        target.buzzCount = (Number(target.buzzCount) || 0) + 1;
+      });
+      return sendJson(res, 200, { ok: true, count: targets.length, sound });
+    }
+
     const person = onlinePeople.get(buzzPath[1]);
     if (!person) {
       return sendJson(res, 404, { error: 'Cette personne vient de quitter le site.' });
     }
-    const sound = BUZZ_SOUNDS.includes(body.sound) ? body.sound : BUZZ_SOUNDS[0];
-    person.buzz = {
-      sound,
-      message: cleanText(body.message, 120),
-      at: Date.now(),
-    };
+    person.buzz = buzz;
     person.buzzCount = (Number(person.buzzCount) || 0) + 1;
-    return sendJson(res, 200, { ok: true, nickname: person.nickname, sound });
+    return sendJson(res, 200, { ok: true, count: 1, nickname: person.nickname, sound });
   }
 
   if (req.method === 'POST' && pathname === '/api/accounts/register') {
