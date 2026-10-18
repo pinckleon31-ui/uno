@@ -5,10 +5,12 @@
   if (typeof module === 'object' && module.exports) module.exports = games;
   if (root) root.SoloGames = games;
 }(typeof globalThis === 'undefined' ? this : globalThis, () => {
+  // Uniquement des emoji Unicode 6.0 : ils s'affichent sur tous les systèmes,
+  // y compris les anciens ordinateurs scolaires sans police emoji récente.
   const MEMORY_SYMBOLS = [
     '🍓', '⭐', '🐱', '🎲', '🚀', '🌈', '🎵', '🍕',
-    '🐢', '🍉', '⚽️', '🎨', '🦊', '🍩', '🧃', '🐝',
-    '🏀', '🪁', '🍭', '🐳', '🎸', '🧁',
+    '🐢', '🍉', '⚽', '🎨', '🐶', '🍎', '🐸', '🐝',
+    '🏀', '🎈', '🍭', '🐳', '🎸', '🍌',
   ];
 
   function randomIndex(length, random) {

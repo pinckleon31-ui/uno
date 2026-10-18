@@ -101,3 +101,17 @@ test('Memory solo propose plus de paires quand on agrandit la grille', () => {
   const capped = soloGames.createMemory({ pairs: 999, random: () => 0.5 });
   assert.ok(capped.pairCount >= 18 && capped.cards.length === capped.pairCount * 2);
 });
+
+test('les symboles Memory restent des emoji affichables partout', () => {
+  const game = soloGames.createMemory({ pairs: 22, random: () => 0.5 });
+  const symbols = [...new Set(game.cards.map((card) => card.symbol))];
+  assert.equal(symbols.length, 22, 'chaque paire a son propre symbole');
+  const tropRecents = ['🦊', '🍩', '🧃', '🪁', '🧁'];
+  assert.ok(
+    symbols.every((symbol) => !tropRecents.includes(symbol)),
+    'les emoji récents s’affichent en carré vide sur les anciens systèmes',
+  );
+  symbols.forEach((symbol) => {
+    assert.ok([...symbol].length === 1, `le symbole ${symbol} doit tenir en un seul caractère emoji`);
+  });
+});

@@ -105,6 +105,7 @@
   let soloStartInFlight = false;
   let soloArcadeState = null;
   let soloTickerId = 0;
+  let snakePaintedIndices = new Set();
   let soloMemoryTimeoutId = 0;
   let cheatActionMode = 'force-next-draw';
   let cheatActionInFlight = false;
@@ -2459,8 +2460,23 @@
     </header>`;
   }
 
-  function soloScorePill(label, value) {
-    return `<div class="solo-score-pill"><small>${label}</small><strong>${value}</strong></div>`;
+  function soloScorePill(label, value, key = '') {
+    const marker = key ? ` data-solo-pill="${key}"` : '';
+    return `<div class="solo-score-pill"><small>${label}</small><strong${marker}>${value}</strong></div>`;
+  }
+
+  // Les colonnes sont écrites en clair (repeat(24, ...)) : certains navigateurs
+  // ignorent une variable CSS dans repeat(), ce qui décalait les rangées et
+  // faisait apparaître le serpent en diagonale sur les grandes grilles.
+  function soloBoardStyle(columns, { gap, fontMin, fontScale, fontMax, width }) {
+    const parts = [
+      `--grid-size:${columns}`,
+      `grid-template-columns:repeat(${columns}, minmax(0, 1fr))`,
+      `gap:${gap}px`,
+      `font-size:clamp(${fontMin}px, ${(fontScale / columns).toFixed(2)}vmin, ${fontMax}px)`,
+    ];
+    if (width) parts.push(`width:min(100%, ${width}px)`);
+    return parts.join(';');
   }
 
   function snakeMarkup(state) {
@@ -2490,8 +2506,8 @@
     return `<div class="solo-arcade-view snake-view">
       ${soloGameHeader('snake', 'Flèches du clavier ou boutons : mange les fruits, sans te cogner !')}
       ${soloOptionRow()}
-      <div class="solo-score-strip">${soloScorePill('SCORE', state.score)}${soloScorePill('RECORD', state.best)}${soloScorePill('VITESSE', soloArcadeState?.variant.label || '—')}</div>
-      <div class="snake-board-wrap"><div class="snake-board" style="--grid-size:${state.size};--cell-gap:${state.size >= 24 ? '1px' : '2px'}" role="img" aria-label="Serpent : ${state.snake.length} segments, score ${state.score}">${cells.join('')}</div>${overlay}</div>
+      <div class="solo-score-strip">${soloScorePill('SCORE', state.score, 'score')}${soloScorePill('RECORD', state.best, 'record')}${soloScorePill('VITESSE', soloArcadeState?.variant.label || '—')}</div>
+      <div class="snake-board-wrap" style="width:min(100%, ${Math.min(540, 380 + Math.max(0, state.size - 18) * 11)}px)"><div class="snake-board" data-snake-board="${state.size}" style="${soloBoardStyle(state.size, { gap: state.size >= 24 ? 1 : 2, fontMin: 4, fontScale: 26, fontMax: 12 })}" role="img" aria-label="Serpent : ${state.snake.length} segments, score ${state.score}">${cells.join('')}</div>${overlay}</div>
       <div class="snake-controls" role="group" aria-label="Commandes du serpent"><span class="snake-control-spacer"></span>${directions.slice(0, 1).map(([direction, symbol, label, focus]) => `<button type="button" class="solo-direction-button" data-solo-direction="${direction}" data-solo-focus="${focus}" aria-label="Aller vers le haut">${symbol}</button>`).join('')}<span class="snake-control-spacer"></span>${directions.slice(1).map(([direction, symbol, label, focus]) => `<button type="button" class="solo-direction-button" data-solo-direction="${direction}" data-solo-focus="${focus}" aria-label="Aller vers ${label.toLocaleLowerCase('fr-FR')}">${symbol}</button>`).join('')}<button type="button" class="solo-pause-button" data-solo-pause data-solo-focus="snake-pause">${state.paused ? 'Reprendre' : 'Pause'}</button></div>
       <p class="solo-game-help">Utilise les flèches ou ZQSD. Espace met le jeu en pause.</p>
       <div class="solo-game-footer"><span>Record sauvegardé sur cet appareil.</span><button type="button" class="button button-muted" data-dialog-close>Quitter le jeu</button></div>
@@ -2511,7 +2527,7 @@
       ${soloOptionRow()}
       <div class="solo-score-strip">${soloScorePill('SCORE', state.score)}${soloScorePill('RECORD', state.best)}${soloScorePill('OBJECTIF', state.target)}</div>
       ${status}
-      <div class="solo-2048-board" style="--grid-size:${state.size}" role="grid" aria-label="Plateau 2048, ${state.size} cases par côté">${tiles}</div>
+      <div class="solo-2048-board" style="${soloBoardStyle(state.size, { gap: state.size >= 6 ? 5 : (state.size >= 5 ? 6 : 8), fontMin: 11, fontScale: 23, fontMax: 31, width: state.size >= 5 ? 430 : 390 })}" role="grid" aria-label="Plateau 2048, ${state.size} cases par côté">${tiles}</div>
       <div class="solo-2048-controls" role="group" aria-label="Déplacer les tuiles">${directions.map(([direction, symbol, label]) => `<button class="solo-direction-button" type="button" data-solo-2048-move="${direction}" data-solo-focus="2048-${direction}" aria-label="Glisser vers ${label.toLocaleLowerCase('fr-FR')}">${symbol}</button>`).join('')}</div>
       <p class="solo-game-help">Flèches du clavier ou boutons. Une nouvelle tuile apparaît après chaque déplacement.</p>
       <div class="solo-game-footer"><span>Record sauvegardé sur cet appareil.</span><button type="button" class="button button-muted" data-dialog-close>Quitter le jeu</button></div>
@@ -2540,7 +2556,7 @@
       <div class="solo-score-strip">${soloScorePill('MINES', state.mineCount)}${soloScorePill('DRAPEAUX', state.flagsRemaining)}${soloScorePill('TEMPS', formatSoloTime(state.elapsedSeconds))}</div>
       ${status}
       <button class="solo-flag-mode${state.flagMode ? ' is-active' : ''}" type="button" data-mines-flag-mode data-solo-focus="flag-mode" aria-pressed="${String(state.flagMode)}">🚩 ${state.flagMode ? 'Mode drapeau activé' : 'Activer le mode drapeau'}</button>
-      <div class="minesweeper-board" style="--mines-columns:${state.columns}" role="grid" aria-label="Démineur, ${state.rows} rangées et ${state.columns} colonnes">${cells}</div>
+      <div class="minesweeper-board" style="${soloBoardStyle(state.columns, { gap: state.columns >= 16 ? 1 : (state.columns >= 12 ? 2 : 3), fontMin: 6, fontScale: 26, fontMax: 15, width: Math.min(560, 400 + Math.max(0, state.columns - 9) * 14) })}" role="grid" aria-label="Démineur, ${state.rows} rangées et ${state.columns} colonnes">${cells}</div>
       <p class="solo-game-help">Le premier clic est toujours sans danger. Les chiffres indiquent les mines voisines.</p>
       <div class="solo-game-footer"><span>Meilleur temps : ${state.best ? formatSoloTime(state.best) : '—'}</span><button type="button" class="button button-muted" data-dialog-close>Quitter le jeu</button></div>
     </div>`;
@@ -2562,7 +2578,7 @@
       ${soloOptionRow()}
       <div class="solo-score-strip">${soloScorePill('COUPS', state.moves)}${soloScorePill('PAIRES', `${state.matches} / ${state.pairCount}`)}${soloScorePill('TEMPS', formatSoloTime(state.elapsedSeconds))}</div>
       ${status}
-      <div class="solo-memory-board" style="--grid-size:${columns}" role="group" aria-label="${state.cards.length} cartes Memory solo">${cards}</div>
+      <div class="solo-memory-board" style="${soloBoardStyle(columns, { gap: columns >= 6 ? 6 : 9, fontMin: 15, fontScale: 30, fontMax: 35, width: columns >= 6 ? 470 : 440 })}" role="group" aria-label="${state.cards.length} cartes Memory solo">${cards}</div>
       <p class="solo-game-help">Les cartes restent cachées jusqu’à ce que tu les retournes. Change la taille quand tu veux : la partie recommence.</p>
       <div class="solo-game-footer"><span>Meilleur score : ${state.best ? `${state.best} coups` : '—'}</span><button type="button" class="button button-muted" data-dialog-close>Quitter le jeu</button></div>
     </div>`;
@@ -2584,11 +2600,59 @@
     const focusKey = focusedControl?.dataset.soloFocus || '';
     dialogContent.innerHTML = soloGameDialog();
     dialogContent.scrollTop = scrollTop;
+    snakePaintedIndices = soloArcadeState.gameId === 'snake'
+      ? new Set(snakeCellClasses(soloArcadeState.game).keys())
+      : new Set();
     if (focusKey) {
       const replacement = Array.from(dialogContent.querySelectorAll('[data-solo-focus]'))
         .find((element) => element.dataset.soloFocus === focusKey && !element.disabled);
       replacement?.focus({ preventScroll: true });
     }
+  }
+
+  function snakeCellClasses(state) {
+    const painted = new Map();
+    state.snake.forEach((part, index) => {
+      const cellIndex = (part.y * state.size) + part.x;
+      painted.set(cellIndex, index === 0 ? 'snake-cell is-head' : 'snake-cell is-body');
+    });
+    if (state.food) {
+      const foodIndex = (state.food.y * state.size) + state.food.x;
+      painted.set(foodIndex, painted.has(foodIndex) ? `${painted.get(foodIndex)} is-food` : 'snake-cell is-food');
+    }
+    return painted;
+  }
+
+  // Sur une grande grille (Turbo : 784 cases toutes les 78 ms), reconstruire tout
+  // le dialogue à chaque pas rendait le jeu injouable. On ne retouche donc que
+  // les cases qui changent.
+  function paintSnakeFrame(state) {
+    const board = dialogContent.querySelector('[data-snake-board]');
+    if (!board || Number(board.dataset.snakeBoard) !== state.size) return false;
+    const cells = board.children;
+    if (cells.length !== state.size * state.size) return false;
+    const painted = snakeCellClasses(state);
+    snakePaintedIndices.forEach((index) => {
+      if (painted.has(index)) return;
+      const cell = cells[index];
+      if (!cell) return;
+      cell.className = 'snake-cell';
+      if (cell.textContent) cell.textContent = '';
+    });
+    painted.forEach((className, index) => {
+      const cell = cells[index];
+      if (!cell) return;
+      if (cell.className !== className) cell.className = className;
+      const symbol = className.includes('is-food') ? '●' : '';
+      if (cell.textContent !== symbol) cell.textContent = symbol;
+    });
+    snakePaintedIndices = new Set(painted.keys());
+    board.setAttribute('aria-label', `Serpent : ${state.snake.length} segments, score ${state.score}`);
+    const scoreValue = dialogContent.querySelector('[data-solo-pill="score"]');
+    if (scoreValue && scoreValue.textContent !== String(state.score)) scoreValue.textContent = String(state.score);
+    const recordValue = dialogContent.querySelector('[data-solo-pill="record"]');
+    if (recordValue && recordValue.textContent !== String(state.best)) recordValue.textContent = String(state.best);
+    return true;
   }
 
   function stopSoloTicker() {
@@ -2602,6 +2666,7 @@
     soloMemoryTimeoutId = 0;
     soloArcadeState = null;
     soloStartInFlight = false;
+    snakePaintedIndices = new Set();
   }
 
   function updateSoloElapsedTime() {
@@ -2644,7 +2709,7 @@
         if (result.ate) game.best = saveSoloRecord('snake', state.variant.id, game.score);
         if (game.status !== 'playing') return finishSoloGame();
         if (result.ate) startSoloTicker();
-        renderSoloGame();
+        if (!paintSnakeFrame(game)) renderSoloGame();
       }, snakeInterval());
       return;
     }

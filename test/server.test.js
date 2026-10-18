@@ -123,6 +123,9 @@ test('API de bout en bout : code organisateur, lobby, confidentialité, bots et 
   assert.match(script.text, /data-memory-card/);
   assert.doesNotMatch(script.text, /\/api\/solo/, 'les jeux solo tournent côté navigateur, sans salon serveur');
   assert.match(script.text, /data-solo-variant/);
+  assert.match(script.text, /function soloBoardStyle/);
+  assert.match(script.text, /grid-template-columns:repeat\(\$\{columns\}/, 'le nombre de colonnes est écrit en clair dans le style du plateau');
+  assert.match(script.text, /function paintSnakeFrame/, 'le serpent est redessiné case par case');
   assert.match(script.text, /function soloOptionRow/);
   assert.match(script.text, /function snakeInterval/);
   assert.match(script.text, /Mettre le jeu en grand/);
@@ -163,6 +166,10 @@ test('API de bout en bout : code organisateur, lobby, confidentialité, bots et 
   assert.match(stylesheet.text, /\.minesweeper-board/);
   assert.match(stylesheet.text, /\.solo-memory-board/);
   assert.match(stylesheet.text, /\.solo-option-chip/);
+  assert.doesNotMatch(stylesheet.text, /repeat\(var\(/, 'une variable dans repeat() décale les rangées sur certains navigateurs');
+  assert.doesNotMatch(stylesheet.text, /calc\([^)]*\/\s*var\(/, 'une division par une variable CSS casse les tailles sur certains navigateurs');
+  assert.match(stylesheet.text, /\.memory-card-face \{[^}]*color: #332d55/, 'le symbole Memory doit rester lisible sur fond blanc');
+  assert.match(stylesheet.text, /\.memory-card-face \{[^}]*Noto Color Emoji/);
   assert.match(stylesheet.text, /\.app-dialog:fullscreen\[data-view="solo-game"\]/);
 
   const initialList = await request('/api/rooms');
