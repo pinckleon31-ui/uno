@@ -531,6 +531,10 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .admin-buzz-actions { display: flex; gap: 6px; }
 .admin-buzz-button { display: inline-flex; align-items: center; gap: 5px; padding: 7px 11px; font-size: .76rem; }
 .admin-buzz-button:disabled { opacity: .55; }
+.admin-buzz-button.is-mega { font-weight: 900; letter-spacing: .02em; }
+.buzz-flash { position: fixed; inset: 0; z-index: 9999; pointer-events: none; background: rgba(228,70,60,.55); animation: buzz-flash .34s steps(1) infinite; }
+@keyframes buzz-flash { 0%, 49% { background: rgba(228,70,60,.55); } 50%, 100% { background: rgba(255,236,120,.5); } }
+@media (prefers-reduced-motion: reduce) { .buzz-flash { animation: none; background: rgba(228,70,60,.35); } }
 @media (max-width: 640px) {
   .admin-presence-card { grid-template-columns: 12px minmax(0, 1fr); }
   .admin-buzz-actions { grid-column: 1 / -1; justify-content: flex-end; }

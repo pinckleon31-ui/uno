@@ -298,19 +298,123 @@
   }
 
   const BUZZ_PATTERNS = {
-    cloche: { notes: [1319, 988, 1319, 1568], duration: 0.28, type: 'sine', gap: 0.22 },
-    alarme: { notes: [880, 587, 880, 587, 880], duration: 0.2, type: 'square', gap: 0.21 },
-    tada: { notes: [523, 659, 784, 1047], duration: 0.34, type: 'triangle', gap: 0.14 },
+    cloche: { notes: [1319, 988, 1319, 1568], duration: 0.28, type: 'sine', gap: 0.22, level: 0.22 },
+    alarme: { notes: [880, 587, 880, 587, 880], duration: 0.2, type: 'square', gap: 0.21, level: 0.26 },
+    tada: { notes: [523, 659, 784, 1047], duration: 0.34, type: 'triangle', gap: 0.14, level: 0.24 },
   };
 
-  function playBuzzSound(sound) {
-    const pattern = BUZZ_PATTERNS[sound] || BUZZ_PATTERNS.cloche;
+  // Le contexte audio est gardé ouvert et débloqué au premier geste de la
+  // personne : sans cela, un navigateur refuse de jouer un son déclenché à
+  // distance par l'organisateur.
+  function audioEngine() {
     const AudioContextClass = window.AudioContext || window.webkitAudioContext;
-    if (!AudioContextClass) return false;
+    if (!AudioContextClass) return null;
     try {
-      if (buzzAudioContext && buzzAudioContext.state !== 'closed') buzzAudioContext.close();
-      const context = new AudioContextClass();
-      buzzAudioContext = context;
+      if (!buzzAudioContext || buzzAudioContext.state === 'closed') {
+        buzzAudioContext = new AudioContextClass();
+      }
+      if (buzzAudioContext.state === 'suspended') buzzAudioContext.resume().catch(() => {});
+      return buzzAudioContext;
+    } catch {
+      return null;
+    }
+  }
+
+  function unlockAudio() {
+    const context = audioEngine();
+    if (!context || context.state === 'suspended') return;
+    document.removeEventListener('pointerdown', unlockAudio);
+    document.removeEventListener('keydown', unlockAudio);
+    document.removeEventListener('touchstart', unlockAudio);
+  }
+
+  // Chaîne de sortie compressée : permet de pousser le volume au maximum
+  // sans que le son ne sature et devienne inaudible.
+  function buzzOutput(context, level) {
+    const master = context.createGain();
+    master.gain.value = level;
+    if (typeof context.createDynamicsCompressor === 'function') {
+      const compressor = context.createDynamicsCompressor();
+      compressor.threshold.value = -14;
+      compressor.knee.value = 6;
+      compressor.ratio.value = 18;
+      compressor.attack.value = 0.002;
+      compressor.release.value = 0.12;
+      master.connect(compressor);
+      compressor.connect(context.destination);
+    } else {
+      master.connect(context.destination);
+    }
+    return master;
+  }
+
+  function noiseBurst(context, output, start, duration) {
+    if (typeof context.createBuffer !== 'function') return;
+    const frames = Math.max(1, Math.floor(context.sampleRate * duration));
+    const buffer = context.createBuffer(1, frames, context.sampleRate);
+    const data = buffer.getChannelData(0);
+    for (let index = 0; index < frames; index += 1) {
+      data[index] = (Math.random() * 2) - 1;
+    }
+    const source = context.createBufferSource();
+    source.buffer = buffer;
+    const gain = context.createGain();
+    gain.gain.setValueAtTime(0.0001, start);
+    gain.gain.exponentialRampToValueAtTime(0.9, start + 0.01);
+    gain.gain.exponentialRampToValueAtTime(0.0001, start + duration);
+    source.connect(gain);
+    gain.connect(output);
+    source.start(start);
+    source.stop(start + duration + 0.02);
+  }
+
+  // SON MÉGA : sirène montante et descendante répétée, doublée en octave et
+  // désaccordée, avec rafales de bruit. Volume poussé au maximum autorisé.
+  function playMegaAlarm(context) {
+    const output = buzzOutput(context, 1);
+    const start = context.currentTime + 0.04;
+    const sweeps = 4;
+    const sweep = 0.62;
+    for (let index = 0; index < sweeps; index += 1) {
+      const begin = start + (index * sweep);
+      const middle = begin + (sweep * 0.5);
+      const end = begin + sweep;
+      noiseBurst(context, output, begin, 0.09);
+      [
+        { type: 'sawtooth', low: 620, high: 1500, gain: 0.5, detune: 0 },
+        { type: 'sawtooth', low: 624, high: 1508, gain: 0.45, detune: 11 },
+        { type: 'square', low: 310, high: 750, gain: 0.35, detune: -7 },
+      ].forEach((voice) => {
+        const oscillator = context.createOscillator();
+        const gain = context.createGain();
+        oscillator.type = voice.type;
+        if (oscillator.detune) oscillator.detune.value = voice.detune;
+        oscillator.frequency.setValueAtTime(voice.low, begin);
+        oscillator.frequency.linearRampToValueAtTime(voice.high, middle);
+        oscillator.frequency.linearRampToValueAtTime(voice.low, end);
+        gain.gain.setValueAtTime(0.0001, begin);
+        gain.gain.exponentialRampToValueAtTime(voice.gain, begin + 0.03);
+        gain.gain.setValueAtTime(voice.gain, end - 0.05);
+        gain.gain.exponentialRampToValueAtTime(0.0001, end);
+        oscillator.connect(gain);
+        gain.connect(output);
+        oscillator.start(begin);
+        oscillator.stop(end + 0.03);
+      });
+    }
+    return (sweeps * sweep * 1000) + 300;
+  }
+
+  function playBuzzSound(sound) {
+    const context = audioEngine();
+    if (!context) return false;
+    try {
+      if (sound === 'mega') {
+        playMegaAlarm(context);
+        return true;
+      }
+      const pattern = BUZZ_PATTERNS[sound] || BUZZ_PATTERNS.cloche;
+      const output = buzzOutput(context, pattern.level || 0.22);
       const startAt = context.currentTime + 0.05;
       pattern.notes.forEach((frequency, index) => {
         const start = startAt + (index * pattern.gap);
@@ -320,37 +424,45 @@
         oscillator.type = pattern.type;
         oscillator.frequency.value = frequency;
         gain.gain.setValueAtTime(0.0001, start);
-        gain.gain.exponentialRampToValueAtTime(0.22, start + 0.02);
+        gain.gain.exponentialRampToValueAtTime(0.9, start + 0.02);
         gain.gain.exponentialRampToValueAtTime(0.0001, end);
         oscillator.connect(gain);
-        gain.connect(context.destination);
+        gain.connect(output);
         oscillator.start(start);
         oscillator.stop(end + 0.03);
       });
-      context.resume().catch(() => {});
-      window.setTimeout(() => {
-        if (buzzAudioContext === context && context.state !== 'closed') {
-          context.close().catch(() => {});
-          buzzAudioContext = null;
-        }
-      }, (pattern.notes.length * pattern.gap + pattern.duration) * 1000 + 500);
       return true;
     } catch {
       return false;
     }
   }
 
+  function flashScreen(duration) {
+    const flash = document.createElement('div');
+    flash.className = 'buzz-flash';
+    flash.setAttribute('aria-hidden', 'true');
+    document.body.append(flash);
+    window.setTimeout(() => flash.remove(), duration);
+  }
+
   function receiveBuzz(buzz) {
     if (!buzz) return;
+    const isMega = buzz.sound === 'mega';
     const played = playBuzzSound(buzz.sound);
     if (navigator.vibrate) {
-      try { navigator.vibrate([130, 70, 130]); } catch { /* vibration indisponible */ }
+      try {
+        navigator.vibrate(isMega ? [400, 120, 400, 120, 400, 120, 600] : [130, 70, 130]);
+      } catch { /* vibration indisponible */ }
     }
+    if (isMega) flashScreen(2600);
     const message = String(buzz.message || '').trim();
+    const prefix = isMega ? '📢 ALERTE DE L’ORGANISATEUR' : '🔔 Message de l’organisateur';
     showToast(
       message
-        ? `🔔 Message de l’organisateur : ${message}`
-        : '🔔 L’organisateur t’envoie un signal sonore !',
+        ? `${prefix} : ${message}`
+        : (isMega
+          ? '📢 ALERTE ! L’organisateur te demande de regarder l’écran.'
+          : '🔔 L’organisateur t’envoie un signal sonore !'),
       played ? 'success' : 'info',
     );
   }
@@ -740,9 +852,10 @@
   }
 
   const BUZZ_BUTTONS = [
-    ['cloche', '🔔', 'Cloche'],
-    ['alarme', '🚨', 'Alarme'],
-    ['tada', '🎉', 'Tada'],
+    ['cloche', '🔔', 'Cloche', 'button-muted'],
+    ['alarme', '🚨', 'Alarme', 'button-muted'],
+    ['tada', '🎉', 'Tada', 'button-muted'],
+    ['mega', '📢', 'MÉGA', 'button-danger'],
   ];
 
   function adminPresenceRows() {
@@ -758,7 +871,12 @@
           <small>En ligne depuis ${escapeHtml(presenceAge(person.firstSeenAt))} · vu il y a ${escapeHtml(presenceAge(person.lastSeenAt))}${person.buzzCount ? ` · ${person.buzzCount} son${person.buzzCount > 1 ? 's' : ''} envoyé${person.buzzCount > 1 ? 's' : ''}` : ''}</small>
         </span>
         <span class="admin-buzz-actions">
-          ${BUZZ_BUTTONS.map(([sound, icon, label]) => `<button class="button button-muted admin-buzz-button" type="button" data-admin-buzz="${escapeHtml(person.id)}" data-admin-buzz-sound="${sound}" title="Envoyer le son ${label} à ${escapeHtml(person.nickname)}" aria-label="Envoyer le son ${label} à ${escapeHtml(person.nickname)}"><span aria-hidden="true">${icon}</span>${label}</button>`).join('')}
+          ${BUZZ_BUTTONS.map(([sound, icon, label, variant]) => {
+            const description = sound === 'mega'
+              ? `Déclencher la sirène très forte sur l’appareil de ${person.nickname}`
+              : `Envoyer le son ${label} à ${person.nickname}`;
+            return `<button class="button ${variant} admin-buzz-button${sound === 'mega' ? ' is-mega' : ''}" type="button" data-admin-buzz="${escapeHtml(person.id)}" data-admin-buzz-sound="${sound}" title="${escapeHtml(description)}" aria-label="${escapeHtml(description)}"><span aria-hidden="true">${icon}</span>${label}</button>`;
+          }).join('')}
         </span>
       </article>`).join('');
   }
@@ -812,7 +930,12 @@
         body: { sound },
         headers: { 'X-Admin-Token': adminToken },
       });
-      showToast(`🔔 Son envoyé à ${data.nickname || person?.nickname || 'cette personne'}.`, 'success');
+      showToast(
+        sound === 'mega'
+          ? `📢 Sirène très forte envoyée à ${data.nickname || person?.nickname || 'cette personne'}.`
+          : `🔔 Son envoyé à ${data.nickname || person?.nickname || 'cette personne'}.`,
+        'success',
+      );
       await refreshAdminPresence();
     } catch (error) {
       if (error.status === 401) {
@@ -3663,6 +3786,9 @@
   loadAccountSession();
   loadRooms();
   loadLeaderboard();
+  document.addEventListener('pointerdown', unlockAudio);
+  document.addEventListener('keydown', unlockAudio);
+  document.addEventListener('touchstart', unlockAudio, { passive: true });
   pingPresence();
   window.setInterval(pingPresence, 8000);
   window.addEventListener('focus', pingPresence);

@@ -34,7 +34,7 @@ const ADMIN_SESSION_TTL = 30 * 60 * 1000;
 // Présence en ligne : une personne disparaît de la liste 40 s après son dernier signe de vie.
 const ONLINE_TTL = 40 * 1000;
 const MAX_ONLINE_ENTRIES = 400;
-const BUZZ_SOUNDS = ['cloche', 'alarme', 'tada'];
+const BUZZ_SOUNDS = ['cloche', 'alarme', 'tada', 'mega'];
 const CODE_LOCK_DURATION = 10 * 60 * 1000;
 const MAX_FAILED_CODES = 5;
 const MAX_BODY_SIZE = 16 * 1024;

@@ -132,6 +132,11 @@ test('API de bout en bout : code organisateur, lobby, confidentialité, bots et 
   assert.match(script.text, /function handleSnakeSwipe/, 'le serpent se dirige aussi au doigt');
   assert.match(script.text, /\/api\/presence/, 'le navigateur signale sa présence');
   assert.match(script.text, /function playBuzzSound/);
+  assert.match(script.text, /function playMegaAlarm/, 'le son très fort existe');
+  assert.match(script.text, /createDynamicsCompressor/, 'le son est compressé pour sonner le plus fort possible');
+  assert.match(script.text, /function flashScreen/);
+  assert.match(script.text, /function unlockAudio/, 'le son doit pouvoir être joué même sans interaction récente');
+  assert.match(script.text, /data-admin-buzz-sound="\$\{sound\}"/);
   assert.match(script.text, /data-admin-buzz/);
   assert.match(script.text, /function refreshAdminPresence/);
   assert.match(script.text, /function soloOptionRow/);
@@ -177,6 +182,7 @@ test('API de bout en bout : code organisateur, lobby, confidentialité, bots et 
   assert.match(stylesheet.text, /\.snake-canvas/);
   assert.match(stylesheet.text, /\.admin-presence-card/);
   assert.match(stylesheet.text, /\.admin-buzz-button/);
+  assert.match(stylesheet.text, /\.buzz-flash/);
   assert.doesNotMatch(stylesheet.text, /repeat\(var\(/, 'une variable dans repeat() décale les rangées sur certains navigateurs');
   assert.doesNotMatch(stylesheet.text, /calc\([^)]*\/\s*var\(/, 'une division par une variable CSS casse les tailles sur certains navigateurs');
   assert.match(stylesheet.text, /\.memory-card-face \{[^}]*color: #332d55/, 'le symbole Memory doit rester lisible sur fond blanc');
@@ -719,6 +725,24 @@ test('la présence en ligne se déclare, se liste côté admin et reçoit un son
 
   const again = await request('/api/presence', { method: 'POST', body: { id: lina.id, nickname: 'Lina' } });
   assert.equal(again.data.buzz, null, 'le son ne sonne pas en boucle');
+
+  // Son très fort : accepté comme les autres et transmis tel quel.
+  const mega = await request(`/api/admin/presence/${lina.id}/buzz`, {
+    method: 'POST',
+    body: { sound: 'mega' },
+    headers: adminHeaders,
+  });
+  assert.equal(mega.status, 200);
+  assert.equal(mega.data.sound, 'mega');
+  const megaDelivered = await request('/api/presence', { method: 'POST', body: { id: lina.id } });
+  assert.equal(megaDelivered.data.buzz.sound, 'mega');
+
+  const inconnu = await request(`/api/admin/presence/${lina.id}/buzz`, {
+    method: 'POST',
+    body: { sound: 'tremblement-de-terre' },
+    headers: adminHeaders,
+  });
+  assert.equal(inconnu.data.sound, 'cloche', 'un son inconnu retombe sur la cloche');
 
   const missing = await request('/api/admin/presence/inconnu/buzz', {
     method: 'POST',
