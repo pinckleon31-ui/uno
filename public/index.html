@@ -1,0 +1,305 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="theme-color" content="#242344">
+    <meta name="description" content="Trouve une partie, rejoins tes amis et partage la récré avec Récré’Jeux, la salle de jeux de ton école.">
+    <title>Récré’Jeux — La salle de jeux de l’école</title>
+    <link rel="stylesheet" href="/styles.css">
+    <script src="/solo-games.js" defer></script>
+    <script src="/app.js" defer></script>
+  </head>
+  <body>
+    <header class="site-header">
+      <div class="container header-inner">
+        <a class="brand" href="#accueil" aria-label="Récré’Jeux, accueil">
+          <span class="brand-mark" aria-hidden="true">
+            <span class="brand-card brand-card-a"></span>
+            <span class="brand-card brand-card-b"></span>
+            <span class="brand-spark">✦</span>
+          </span>
+          <span class="brand-name">récré<span>jeux</span></span>
+          <span class="brand-school">ÉCOLE</span>
+        </a>
+
+        <nav class="main-nav" aria-label="Navigation principale">
+          <a href="#parties">Les parties</a>
+          <a href="#jeux">Les jeux</a>
+          <a href="#solo">Mode solo</a>
+          <a href="#classement">Le classement</a>
+          <a href="#comment">Comment ça marche</a>
+        </nav>
+
+        <div class="header-actions">
+          <span class="connection-pill" id="connection-status" aria-live="polite">
+            <span class="connection-dot"></span>
+            <span id="connection-label">Connexion…</span>
+          </span>
+          <button class="button button-account" id="account-button" type="button" data-action="account" aria-label="Ouvrir mon compte">
+            <span class="account-button-icon" aria-hidden="true">☺</span><span id="account-label">Mon compte</span>
+          </button>
+          <button class="button button-primary header-create" type="button" data-action="create">
+            <span class="button-plus" aria-hidden="true">+</span>
+            Créer une partie
+          </button>
+        </div>
+
+        <button class="menu-toggle" type="button" id="menu-toggle" aria-label="Ouvrir le menu" aria-expanded="false" aria-controls="mobile-nav">
+          <span></span><span></span>
+        </button>
+      </div>
+      <nav class="mobile-nav" id="mobile-nav" aria-label="Navigation mobile">
+        <a href="#parties">Les parties</a>
+        <a href="#jeux">Les jeux</a>
+        <a href="#solo">Mode solo</a>
+        <a href="#classement">Le classement</a>
+        <a href="#comment">Comment ça marche</a>
+        <button class="mobile-account-link" type="button" data-action="account">☺ Mon compte</button>
+        <button class="button button-primary" type="button" data-action="create">＋ Créer une partie</button>
+      </nav>
+    </header>
+
+    <main id="accueil">
+      <section class="hero-section" aria-labelledby="hero-title">
+        <div class="hero-decoration hero-decoration-one" aria-hidden="true"></div>
+        <div class="hero-decoration hero-decoration-two" aria-hidden="true"></div>
+        <div class="container hero-grid">
+          <div class="hero-copy">
+            <p class="eyebrow hero-eyebrow"><span class="eyebrow-star">✦</span> LE QG DE LA RÉCRÉ</p>
+            <h1 id="hero-title">Une petite partie,<br>et la récré <span>décolle.</span></h1>
+            <p class="hero-description">UNO, Puissance 4, morpion, Memory, quiz, loup-garou ou blind test : joue en direct avec tes amis, tchat inclus !</p>
+            <div class="hero-actions">
+              <a class="button button-lime" href="#parties">
+                Voir les parties
+                <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 10h11M10 5l5 5-5 5"/></svg>
+              </a>
+              <button class="button button-ghost" type="button" data-action="create">Créer une partie</button>
+            </div>
+            <div class="hero-reassurance">
+              <span class="reassurance-icon" aria-hidden="true">☺</span>
+              <span><strong>Compte facultatif</strong><span class="reassurance-separator">·</span>garde ton pseudo</span>
+            </div>
+          </div>
+
+          <div class="hero-art" aria-label="Illustration de cartes de jeu">
+            <div class="art-orbit art-orbit-one" aria-hidden="true"></div>
+            <div class="art-orbit art-orbit-two" aria-hidden="true"></div>
+            <span class="art-star art-star-one" aria-hidden="true">✦</span>
+            <span class="art-star art-star-two" aria-hidden="true">✳</span>
+            <span class="art-star art-star-three" aria-hidden="true">✧</span>
+            <div class="floating-note floating-note-top"><span class="note-dot"></span> On joue ensemble ?</div>
+            <div class="playing-card playing-card-back" aria-hidden="true">
+              <span class="card-corner">★</span>
+              <span class="card-center">RÉCRÉ</span>
+              <span class="card-corner card-corner-bottom">★</span>
+            </div>
+            <div class="playing-card playing-card-green" aria-hidden="true">
+              <span class="card-corner">7</span>
+              <span class="card-center">7</span>
+              <span class="card-corner card-corner-bottom">7</span>
+            </div>
+            <div class="playing-card playing-card-main" aria-hidden="true">
+              <span class="card-label">TA PROCHAINE</span>
+              <span class="card-center card-center-word">PARTIE<span>!</span></span>
+              <span class="card-bottom-note">À toi de jouer ↗</span>
+            </div>
+            <div class="floating-note floating-note-bottom"><span class="mini-avatars"><i>J</i><i>M</i><i>+</i></span><span>La bande est là</span></div>
+            <span class="art-die" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i></span>
+          </div>
+        </div>
+        <div class="container hero-highlights" aria-label="Les avantages de Récré’Jeux">
+          <div class="highlight-item"><span class="highlight-icon highlight-icon-yellow">✦</span><span><strong>7 jeux</strong><small>pour tous les goûts</small></span></div>
+          <span class="highlight-divider" aria-hidden="true"></span>
+          <div class="highlight-item"><span class="highlight-icon highlight-icon-pink">♡</span><span><strong>Entre amis</strong><small>un pseudo suffit</small></span></div>
+          <span class="highlight-divider" aria-hidden="true"></span>
+          <div class="highlight-item"><span class="highlight-icon highlight-icon-blue">↗</span><span><strong>En quelques clics</strong><small>trouve ton salon</small></span></div>
+        </div>
+      </section>
+
+      <section class="rooms-section section-space" id="parties" aria-labelledby="rooms-title">
+        <div class="container">
+          <div class="section-heading rooms-heading">
+            <div>
+              <p class="eyebrow section-eyebrow"><span class="eyebrow-star">✦</span> LA SALLE DE JEUX</p>
+              <h2 id="rooms-title">Quelle partie on lance ?</h2>
+              <p class="section-intro">Les salons ouverts sont juste en dessous. Choisis le tien et rejoins la bande.</p>
+            </div>
+            <div class="rooms-heading-actions">
+              <span class="auto-refresh-note"><span class="pulse-dot"></span> Mise à jour en direct</span>
+              <button class="refresh-button" type="button" id="refresh-button" aria-label="Actualiser les parties" title="Actualiser les parties">
+                <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M16.2 8A6.4 6.4 0 0 0 5.4 5.2L3.5 7M3.5 7V3.8M3.5 7h3.3M3.8 12a6.4 6.4 0 0 0 10.8 2.8l1.9-1.8m0 0v3.2m0-3.2h-3.3"/></svg>
+              </button>
+            </div>
+          </div>
+
+          <div class="rooms-toolbar">
+            <div class="filter-list" id="filter-list" role="group" aria-label="Filtrer les parties par type de jeu">
+              <button class="filter-chip is-active" type="button" data-filter="Tous" aria-pressed="true">Tout voir</button>
+              <button class="filter-chip" type="button" data-filter="Cartes" aria-pressed="false">Cartes</button>
+              <button class="filter-chip" type="button" data-filter="Ambiance" aria-pressed="false">Ambiance</button>
+              <button class="filter-chip" type="button" data-filter="Quiz" aria-pressed="false">Quiz</button>
+              <button class="filter-chip" type="button" data-filter="Stratégie" aria-pressed="false">Stratégie</button>
+              <button class="filter-chip" type="button" data-filter="Musique" aria-pressed="false">Musique</button>
+              <button class="filter-chip" type="button" data-filter="Réflexion" aria-pressed="false">Réflexion</button>
+            </div>
+            <label class="search-field">
+              <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="8.7" cy="8.7" r="5.5"/><path d="m13 13 4 4"/></svg>
+              <span class="visually-hidden">Rechercher une partie</span>
+              <input id="room-search" type="search" placeholder="Chercher un salon…" autocomplete="off">
+            </label>
+          </div>
+
+          <div class="room-results-line">
+            <p id="room-count" aria-live="polite">Chargement des parties…</p>
+            <span>Les salons inactifs sont nettoyés automatiquement.</span>
+          </div>
+          <div class="room-grid" id="room-grid" aria-live="polite" aria-busy="true">
+            <div class="room-skeleton"></div>
+            <div class="room-skeleton"></div>
+            <div class="room-skeleton"></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="games-section section-space" id="jeux" aria-labelledby="games-title">
+        <div class="container">
+          <div class="section-heading games-heading">
+            <div>
+              <p class="eyebrow section-eyebrow"><span class="eyebrow-star">✦</span> À CHACUN SON JEU</p>
+              <h2 id="games-title">Choisis ton ambiance.</h2>
+            </div>
+            <p class="games-heading-note">Une partie peut réunir toute la classe<br>ou juste deux amis.</p>
+          </div>
+          <div class="games-grid">
+            <button class="game-card game-card-uno" type="button" data-game-filter="Cartes">
+              <span class="game-card-art"><span class="game-emoji">🃏</span><span class="game-card-stamp">À plusieurs</span><span class="game-art-spark">✦</span></span>
+              <span class="game-card-copy"><span><strong>UNO</strong><small>La revanche commence ici.</small></span><span class="game-card-arrow" aria-hidden="true">↗</span></span>
+            </button>
+            <button class="game-card game-card-wolf" type="button" data-game-filter="Ambiance">
+              <span class="game-card-art"><span class="game-emoji">🐺</span><span class="game-card-stamp">Dès 4 joueurs</span><span class="game-art-spark">✧</span></span>
+              <span class="game-card-copy"><span><strong>Loup-garou</strong><small>Nuit, rôles secrets, débat et vote</small></span><span class="game-card-arrow" aria-hidden="true">↗</span></span>
+            </button>
+            <button class="game-card game-card-quiz" type="button" data-game-filter="Quiz">
+              <span class="game-card-art"><span class="game-emoji">🧠</span><span class="game-card-stamp">Fais chauffer tes neurones</span><span class="game-art-spark">✳</span></span>
+              <span class="game-card-copy"><span><strong>Quiz express</strong><small>Qui connaît toutes les réponses ?</small></span><span class="game-card-arrow" aria-hidden="true">↗</span></span>
+            </button>
+            <button class="game-card game-card-connect" type="button" data-game-filter="Stratégie">
+              <span class="game-card-art"><span class="game-emoji">🔴</span><span class="game-card-stamp">Duel</span><span class="game-art-spark">✦</span></span>
+              <span class="game-card-copy"><span><strong>Puissance 4</strong><small>Aligne tes pions, gagne le duel.</small></span><span class="game-card-arrow" aria-hidden="true">↗</span></span>
+            </button>
+            <button class="game-card game-card-music" type="button" data-game-filter="Musique">
+              <span class="game-card-art"><span class="game-emoji">🎧</span><span class="game-card-stamp">Ambiance garantie</span><span class="game-art-spark">♫</span></span>
+              <span class="game-card-copy"><span><strong>Blind test</strong><small>Reconnais le son en premier.</small></span><span class="game-card-arrow" aria-hidden="true">↗</span></span>
+            </button>
+            <button class="game-card game-card-morpion" type="button" data-game-filter="Stratégie">
+              <span class="game-card-art"><span class="game-emoji">⭕</span><span class="game-card-stamp">Duel express</span><span class="game-art-spark">×</span></span>
+              <span class="game-card-copy"><span><strong>Morpion</strong><small>Aligne trois symboles.</small></span><span class="game-card-arrow" aria-hidden="true">↗</span></span>
+            </button>
+            <button class="game-card game-card-memory" type="button" data-game-filter="Réflexion">
+              <span class="game-card-art"><span class="game-emoji">🧩</span><span class="game-card-stamp">Dès 2 joueurs</span><span class="game-art-spark">✦</span></span>
+              <span class="game-card-copy"><span><strong>Memory</strong><small>Retrouve les paires cachées.</small></span><span class="game-card-arrow" aria-hidden="true">↗</span></span>
+            </button>
+          </div>
+          <p class="games-hint"><span aria-hidden="true">↖</span> Clique sur un jeu pour afficher les salons de cette catégorie.</p>
+        </div>
+      </section>
+
+      <section class="solo-section section-space" id="solo" aria-labelledby="solo-title">
+        <div class="container">
+          <div class="section-heading solo-heading">
+            <div>
+              <p class="eyebrow section-eyebrow"><span class="eyebrow-star">✦</span> VRAIS JEUX SOLO · SANS COMPTE</p>
+              <h2 id="solo-title">À toi de jouer.</h2>
+              <p class="section-intro">Des jeux faits pour une seule personne : lance une partie en un clic, règle la difficulté et joue en grand, sans code organisateur, mot de passe ni connexion.</p>
+            </div>
+            <span class="solo-promise"><span aria-hidden="true">🔓</span> Accès direct</span>
+          </div>
+          <div class="solo-game-grid" aria-label="Jeux solo">
+            <button class="solo-game-card" type="button" data-solo-game="snake"><span class="solo-game-icon">🐍</span><span class="solo-game-copy"><strong>Snake</strong><small>4 vitesses · du calme au turbo</small></span><span class="solo-game-arrow" aria-hidden="true">↗</span></button>
+            <button class="solo-game-card" type="button" data-solo-game="2048"><span class="solo-game-icon">🔢</span><span class="solo-game-copy"><strong>2048</strong><small>Grilles 4 × 4, 5 × 5 ou 6 × 6</small></span><span class="solo-game-arrow" aria-hidden="true">↗</span></button>
+            <button class="solo-game-card" type="button" data-solo-game="demineur"><span class="solo-game-icon">💣</span><span class="solo-game-copy"><strong>Démineur</strong><small>De 9 × 9 à 20 × 20 · jusqu’à 90 mines</small></span><span class="solo-game-arrow" aria-hidden="true">↗</span></button>
+            <button class="solo-game-card" type="button" data-solo-game="memory"><span class="solo-game-icon">🧩</span><span class="solo-game-copy"><strong>Memory solo</strong><small>8, 12 ou 18 paires à retrouver</small></span><span class="solo-game-arrow" aria-hidden="true">↗</span></button>
+          </div>
+          <p class="solo-footnote"><span aria-hidden="true">✦</span> Chaque jeu a ses réglages (vitesse, taille, difficulté) et un bouton plein écran. Les meilleurs scores sont gardés sur cet appareil : aucun salon ni bot n’est créé.</p>
+        </div>
+      </section>
+
+      <section class="leaderboard-section section-space" id="classement" aria-labelledby="leaderboard-title">
+        <div class="container leaderboard-layout">
+          <div class="leaderboard-intro">
+            <p class="eyebrow section-eyebrow"><span class="eyebrow-star">✦</span> LE PALMARÈS DE LA RÉCRÉ</p>
+            <h2 id="leaderboard-title">Les champions<br><span>du moment.</span></h2>
+            <p>Les victoires des comptes joueur sont conservées ici. Crée ton compte facultatif pour voir ton pseudo briller au classement.</p>
+            <button class="button button-primary" type="button" data-action="account">Mon compte joueur <span aria-hidden="true">↗</span></button>
+          </div>
+          <div class="leaderboard-card">
+            <div class="leaderboard-card-header">
+              <span class="leaderboard-trophy" aria-hidden="true">🏆</span>
+              <span><strong>Classement des victoires</strong><small>Le top 10 des joueurs inscrits</small></span>
+              <button class="refresh-button leaderboard-refresh" type="button" id="leaderboard-refresh" aria-label="Actualiser le classement" title="Actualiser le classement">
+                <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M16.2 8A6.4 6.4 0 0 0 5.4 5.2L3.5 7M3.5 7V3.8M3.5 7h3.3M3.8 12a6.4 6.4 0 0 0 10.8 2.8l1.9-1.8m0 0v3.2m0-3.2h-3.3"/></svg>
+              </button>
+            </div>
+            <ol class="leaderboard-list" id="leaderboard-list" aria-live="polite" aria-busy="true">
+              <li class="leaderboard-loading">Chargement du classement…</li>
+            </ol>
+            <p class="leaderboard-footnote">Seules les victoires jouées avec un compte sont comptabilisées.</p>
+          </div>
+        </div>
+      </section>
+
+      <section class="how-section section-space" id="comment" aria-labelledby="how-title">
+        <div class="container how-layout">
+          <div class="how-intro">
+            <p class="eyebrow section-eyebrow"><span class="eyebrow-star">✦</span> SIMPLE COMME BONJOUR</p>
+            <h2 id="how-title">Prêt en trois<br><span>petites étapes.</span></h2>
+            <p>Rejoins avec un pseudo, ou crée un petit compte pour le retrouver d’une visite à l’autre.</p>
+            <div class="organizer-note">
+              <span class="organizer-lock" aria-hidden="true">🔐</span>
+              <p><strong>Pour créer un salon</strong><br>Le code organisateur est demandé à la création. Les administrateurs peuvent créer sans le code ; les salons ouverts restent visibles et tout le monde peut les rejoindre.</p>
+            </div>
+            <button class="organizer-admin-link" type="button" data-action="admin"><span aria-hidden="true">🔐</span> Panneau administrateur <span aria-hidden="true">↗</span></button>
+          </div>
+          <div class="steps-list">
+            <article class="step-card">
+              <span class="step-number">01</span>
+              <span class="step-icon step-icon-yellow" aria-hidden="true">⌕</span>
+              <div><h3>Trouve ta partie</h3><p>Parcours les salons ouverts et choisis le jeu qui te tente.</p></div>
+              <span class="step-line" aria-hidden="true"></span>
+            </article>
+            <article class="step-card">
+              <span class="step-number">02</span>
+              <span class="step-icon step-icon-pink" aria-hidden="true">☺</span>
+              <div><h3>Garde ton pseudo</h3><p>Crée un compte facultatif avec un petit mot de passe, ou rejoins directement sans compte.</p></div>
+              <span class="step-line" aria-hidden="true"></span>
+            </article>
+            <article class="step-card">
+              <span class="step-number">03</span>
+              <span class="step-icon step-icon-blue" aria-hidden="true">↗</span>
+              <div><h3>Rejoins la bande</h3><p>Entre dans le salon et retrouve les autres joueurs.</p></div>
+            </article>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <div class="container footer-inner">
+        <a class="brand footer-brand" href="#accueil" aria-label="Récré’Jeux, retour en haut">
+          <span class="brand-mark" aria-hidden="true"><span class="brand-card brand-card-a"></span><span class="brand-card brand-card-b"></span><span class="brand-spark">✦</span></span>
+          <span class="brand-name">récré<span>jeux</span></span>
+        </a>
+        <p>Une récré plus fun, ça se joue ensemble.</p>
+        <a class="back-to-top" href="#accueil">Retour en haut <span aria-hidden="true">↑</span></a>
+      </div>
+      <div class="container footer-bottom"><span>Récré’Jeux · La salle de jeux de l’école</span><span>Fait pour jouer ensemble <span aria-hidden="true">♡</span></span></div>
+    </footer>
+
+    <dialog class="app-dialog" id="app-dialog" aria-labelledby="dialog-title">
+      <button class="dialog-close" type="button" data-dialog-close aria-label="Fermer la fenêtre">×</button>
+      <div class="dialog-content" id="dialog-content"></div>
+    </dialog>
+    <div class="toast-region" id="toast-region" aria-live="polite" aria-atomic="true"></div>
+  </body>
+</html>
