@@ -563,6 +563,9 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .admin-note-icon { font-size: 11px; line-height: 1.35; text-align: center; }
 .admin-note-text { color: #4b4860; font-size: 10px; line-height: 1.45; overflow-wrap: anywhere; }
 .admin-note-item[data-kind="tchat"] .admin-note-text { color: #2f4b6e; font-style: italic; }
+.admin-note-item[data-kind="touche"] { background: #f4f7ff; }
+.admin-note-item[data-kind="touche"] .admin-note-text { color: #2d4a7c; font-weight: 700; }
+.admin-note-item[data-kind="touche"] .admin-note-icon { font-size: 12px; }
 .admin-note-item[data-kind="victoire"] .admin-note-text { color: #8a6100; font-weight: 700; }
 .admin-note-empty { margin: 0; padding: 0 11px 11px; color: #8c8a9c; font-size: 9px; }
 @media (max-width: 640px) {

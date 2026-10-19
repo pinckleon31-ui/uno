@@ -720,6 +720,39 @@
     });
   }
 
+  // Décrit un clic à partir des attributs explicites du bouton. On ne lit
+  // JAMAIS le texte affiché ni la valeur d'un champ : seulement nos propres
+  // attributs data-*, pour ne jamais transmettre ce que le joueur écrit.
+  function trackedClickKey(target) {
+    if (!target || typeof target.closest !== 'function') return '';
+    const soloGame = soloArcadeState?.gameId || '';
+    if (target.closest('[data-solo-game]')) {
+      const id = target.closest('[data-solo-game]').dataset.soloGame;
+      if (['snake', '2048', 'demineur', 'memory'].includes(id)) return `solo-${id}`;
+    }
+    if (target.closest('[data-solo-direction]') && ['snake', 'demineur'].includes(soloGame)) {
+      const direction = target.closest('[data-solo-direction]').dataset.soloDirection;
+      if (['up', 'down', 'left', 'right'].includes(direction)) return `solo-touche-${soloGame}-${direction}`;
+    }
+    if (target.closest('[data-solo-2048-move]')) {
+      const direction = target.closest('[data-solo-2048-move]').dataset.solo2048Move;
+      if (['up', 'down', 'left', 'right'].includes(direction)) return `solo-touche-2048-${direction}`;
+    }
+    if (target.closest('[data-solo-variant]')) return 'solo-reglage';
+    if (target.closest('[data-solo-restart]')) return 'solo-rejouer';
+    if (target.closest('[data-solo-pause]')) return soloArcadeState?.game?.paused ? 'solo-reprendre' : 'solo-pause';
+    if (target.closest('[data-mines-flag-mode]')) return 'solo-drapeau';
+    if (target.closest('[data-solo-continue]') || target.closest('[data-memory-continue]')) return 'solo-continuer';
+    if (target.closest('[data-memory-card]')) return 'memoire-retourner-carte';
+    if (target.closest('[data-chat-reaction]')) return 'salon-reaction';
+    return '';
+  }
+
+  function trackClick(event) {
+    const key = trackedClickKey(event.target);
+    if (key) trackAction(key, 10);
+  }
+
   function openDialog(view, content, roomId = '') {
     dialog.dataset.view = view;
     dialog.dataset.roomId = roomId;
@@ -894,6 +927,7 @@
   const ACTIVITY_ICONS = {
     visite: '🚪',
     clic: '🖱️',
+    touche: '⌨️',
     tchat: '💬',
     compte: '👤',
     salon: '🎪',
@@ -3445,6 +3479,11 @@
     const typingTarget = event.target?.closest?.('input, textarea, select, [contenteditable="true"]');
     if (typingTarget) return;
     const key = String(event.key || '').toLowerCase();
+    const arrowKeys = ['arrowup', 'arrowdown', 'arrowleft', 'arrowright'];
+    if (arrowKeys.includes(key) && ['snake', '2048', 'demineur'].includes(soloArcadeState.gameId)) {
+      const arrowToDirection = { arrowup: 'up', arrowdown: 'down', arrowleft: 'left', arrowright: 'right' };
+      trackAction(`solo-touche-${soloArcadeState.gameId}-${arrowToDirection[key]}`, 400);
+    }
     if (soloArcadeState.gameId === 'snake') {
       const directions = {
         arrowup: 'up', w: 'up', z: 'up',
@@ -3568,6 +3607,7 @@
   }
 
   document.addEventListener('click', (event) => {
+    trackClick(event);
     const closeButton = event.target.closest('[data-dialog-close]');
     if (closeButton) {
       requestDialogClose();

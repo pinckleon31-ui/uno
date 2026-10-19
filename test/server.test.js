@@ -936,6 +936,31 @@ test('Bloc-notes : les clics et les mots du tchat public sont notés, pas les ch
   });
   assert.equal(launchedSnake.status, 200);
 
+  // Chaque flèche de jeu est notée individuellement.
+  for (const [arrow, symbol] of [['up', '↑'], ['left', '←'], ['down', '↓'], ['right', '→']]) {
+    const pressed = await request('/api/presence/action', {
+      method: 'POST',
+      body: { id: presenceId, action: `solo-touche-snake-${arrow}` },
+    });
+    assert.equal(pressed.status, 200, `flèche ${arrow} acceptée`);
+    const notes = (await request('/api/admin/presence', { headers: adminHeaders })).data.people
+      .find((person) => person.nickname === 'Nina').notes.map((note) => note.text);
+    assert.ok(notes.includes(`a appuyé sur ${symbol} au Snake`), `la flèche ${symbol} doit apparaître`);
+  }
+
+  // Les autres contrôles de jeu sont notés eux aussi.
+  for (const [action, expected] of [
+    ['solo-pause', 'a mis le jeu en pause'],
+    ['solo-reprendre', 'a repris le jeu'],
+    ['solo-rejouer', 'a recommencé une partie'],
+    ['memoire-retourner-carte', 'a retourné une carte au Memory'],
+  ]) {
+    assert.equal((await request('/api/presence/action', { method: 'POST', body: { id: presenceId, action } })).status, 200);
+    const notes = (await request('/api/admin/presence', { headers: adminHeaders })).data.people
+      .find((person) => person.nickname === 'Nina').notes.map((note) => note.text);
+    assert.ok(notes.includes(expected), expected);
+  }
+
   // Une clé inconnue est refusée : impossible d'écrire du texte libre.
   const forbidden = await request('/api/presence/action', {
     method: 'POST',
@@ -1014,6 +1039,12 @@ test('Le suivi des clics n’envoie que des clés et ne lit jamais les champs de
   assert.ok(!/['"]keypress['"]/.test(script));
   assert.ok(!/['"]keyup['"]/.test(script));
   assert.ok(!/beforeinput/.test(script));
+
+  // Seules les quatres flèches sont suivies : aucune lettre, aucun chiffre.
+  assert.match(script, /const arrowKeys = \['arrowup', 'arrowdown', 'arrowleft', 'arrowright'\]/);
+  assert.match(script, /solo-touche-\$\{soloArcadeState\.gameId\}/);
+  assert.ok(!/event\.key\)[^\n]{0,40}trackAction/.test(script), 'jamais la touche brute envoyée');
+  assert.match(script, /if \(typingTarget\) return;/, 'les champs de saisie sont ignorés');
 
   // Le bloc-notes s'affiche à côté du nom.
   assert.match(script, /admin-note-list/);

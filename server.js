@@ -51,7 +51,7 @@ function soundLabel(sound) {
 // gestes admin). Il ne contient JAMAIS de frappe au clavier, de mot de passe,
 // ni le code organisateur.
 const MAX_ACTIVITY_ENTRIES = 600;
-const ACTIVITY_KINDS = Object.freeze(['visite', 'compte', 'salon', 'partie', 'victoire', 'admin', 'clic', 'tchat']);
+const ACTIVITY_KINDS = Object.freeze(['visite', 'compte', 'salon', 'partie', 'victoire', 'admin', 'clic', 'touche', 'tchat']);
 
 // Liste blanche des boutons suivis. Le navigateur n'envoie qu'une CLÉ courte :
 // le serveur choisit lui-même la phrase. Aucun contenu de champ, aucune touche
@@ -71,6 +71,44 @@ const UI_ACTIONS = Object.freeze({
   'plein-ecran': 'a basculé le jeu en plein écran',
   'admin': 'a ouvert le panneau administrateur',
 });
+
+const SOLO_GAME_NAMES = Object.freeze({
+  snake: 'Snake',
+  '2048': '2048',
+  demineur: 'Démineur',
+  memory: 'Memory',
+});
+const DIRECTION_SYMBOLS = Object.freeze({ up: '↑', down: '↓', left: '←', right: '→' });
+
+// Traduit une CLÉ reçue du navigateur en phrase. Tout ce qui n'est pas dans ce
+// catalogue est refusé : le client ne peut jamais faire écrire un texte libre.
+// Aucune lettre, aucun chiffre et aucun contenu de champ ne passe par ici :
+// seules les flèches de jeu et les boutons de l'interface sont connus.
+function actionLabel(action) {
+  const key = String(action || '');
+  if (UI_ACTIONS[key]) return { text: UI_ACTIONS[key], kind: 'clic' };
+
+  let match = /^solo-(snake|2048|demineur|memory)$/.exec(key);
+  if (match) return { text: `a lancé une partie de ${SOLO_GAME_NAMES[match[1]]}`, kind: 'clic' };
+
+  match = /^solo-touche-(snake|2048|demineur)-(up|down|left|right)$/.exec(key);
+  if (match) {
+    return {
+      text: `a appuyé sur ${DIRECTION_SYMBOLS[match[2]]} au ${SOLO_GAME_NAMES[match[1]]}`,
+      kind: 'touche',
+    };
+  }
+
+  if (key === 'solo-pause') return { text: 'a mis le jeu en pause', kind: 'clic' };
+  if (key === 'solo-reprendre') return { text: 'a repris le jeu', kind: 'clic' };
+  if (key === 'solo-rejouer') return { text: 'a recommencé une partie', kind: 'clic' };
+  if (key === 'solo-reglage') return { text: 'a changé un réglage du jeu', kind: 'clic' };
+  if (key === 'solo-drapeau') return { text: 'a basculé le mode drapeau du Démineur', kind: 'clic' };
+  if (key === 'solo-continuer') return { text: 'a enchaîné sur la manche suivante', kind: 'clic' };
+  if (key === 'memoire-retourner-carte') return { text: 'a retourné une carte au Memory', kind: 'clic' };
+  if (key === 'salon-reaction') return { text: 'a envoyé une réaction rapide dans le tchat', kind: 'clic' };
+  return null;
+}
 const CODE_LOCK_DURATION = 10 * 60 * 1000;
 const MAX_FAILED_CODES = 5;
 const MAX_BODY_SIZE = 16 * 1024;
@@ -944,15 +982,15 @@ async function handleApi(req, res, url) {
     cleanOnlinePeople();
     const person = onlinePeople.get(typeof body.id === 'string' ? body.id : '');
     if (!person) return sendJson(res, 404, { error: 'Cette présence n’est plus active.' });
-    const text = UI_ACTIONS[body.action];
-    if (!text) return sendJson(res, 400, { error: 'Action inconnue.' });
+    const decoded = actionLabel(body.action);
+    if (!decoded) return sendJson(res, 400, { error: 'Action inconnue.' });
     logActivity({
       nickname: person.nickname,
       accountId: person.accountId || null,
-      kind: 'clic',
-      text,
-      dedupeKey: `clic:${person.id}:${body.action}`,
-      dedupeMs: 4000,
+      kind: decoded.kind,
+      text: decoded.text,
+      dedupeKey: `action:${person.id}:${body.action}`,
+      dedupeMs: decoded.kind === 'touche' ? 700 : 4000,
     });
     return sendJson(res, 200, { ok: true });
   }
