@@ -51,7 +51,26 @@ function soundLabel(sound) {
 // gestes admin). Il ne contient JAMAIS de frappe au clavier, de mot de passe,
 // ni le code organisateur.
 const MAX_ACTIVITY_ENTRIES = 600;
-const ACTIVITY_KINDS = Object.freeze(['visite', 'compte', 'salon', 'partie', 'victoire', 'admin']);
+const ACTIVITY_KINDS = Object.freeze(['visite', 'compte', 'salon', 'partie', 'victoire', 'admin', 'clic', 'tchat']);
+
+// Liste blanche des boutons suivis. Le navigateur n'envoie qu'une CLÉ courte :
+// le serveur choisit lui-même la phrase. Aucun contenu de champ, aucune touche
+// de clavier et aucun texte libre ne transitent par cette route.
+const UI_ACTIONS = Object.freeze({
+  'accueil': 'est revenu à l’accueil',
+  'compte': 'a ouvert son compte',
+  'creation-partie': 'a ouvert la création de partie',
+  'rejoindre-partie': 'a ouvert la fenêtre pour rejoindre un salon',
+  'code-organisateur': 'a ouvert la saisie du code organisateur',
+  'salon': 'a ouvert un salon',
+  'jeux-solo': 'a ouvert les jeux solo',
+  'solo-snake': 'a lancé une partie de Snake',
+  'solo-2048': 'a lancé une partie de 2048',
+  'solo-demineur': 'a lancé une partie de Démineur',
+  'solo-memory': 'a lancé une partie de Memory',
+  'plein-ecran': 'a basculé le jeu en plein écran',
+  'admin': 'a ouvert le panneau administrateur',
+});
 const CODE_LOCK_DURATION = 10 * 60 * 1000;
 const MAX_FAILED_CODES = 5;
 const MAX_BODY_SIZE = 16 * 1024;
@@ -178,9 +197,9 @@ function saveActivity() {
 // Enregistre UNE action lisible. `dedupeKey` évite les doublons quand le
 // navigateur renvoie plusieurs fois la même requête en quelques secondes.
 // Ne jamais passer ici un mot de passe, un code ou une frappe de clavier.
-function logActivity({ nickname, accountId = null, kind = 'visite', text, dedupeKey = '', dedupeMs = 5000 }) {
+function logActivity({ nickname, accountId = null, kind = 'visite', text, dedupeKey = '', dedupeMs = 5000, maxTextLength = 160 }) {
   const safeNickname = cleanText(nickname, 18) || 'Visiteur';
-  const safeText = cleanText(text, 160);
+  const safeText = cleanText(text, maxTextLength);
   if (!safeText || !ACTIVITY_KINDS.includes(kind)) return null;
   const now = Date.now();
   if (dedupeKey) {
@@ -569,6 +588,21 @@ function publicPresence(person) {
   };
 }
 
+// Bloc-notes d'une personne : ses dernières actions. On rattache par compte
+// quand il y en a un, sinon par pseudo (deux invités homonymes partagent alors
+// le même bloc-notes).
+function notesForPerson(person, limit = 14) {
+  const nicknameKey = String(person.nickname || '').toLocaleLowerCase('fr-FR');
+  return activityLog
+    .filter((entry) => (
+      person.accountId
+        ? entry.accountId === person.accountId
+        : entry.nickname.toLocaleLowerCase('fr-FR') === nicknameKey
+    ))
+    .slice(0, limit)
+    .map((entry) => ({ at: entry.at, kind: entry.kind, text: entry.text }));
+}
+
 function clientKey(req) {
   const forwardedFor = req.headers['x-forwarded-for'];
   if (typeof forwardedFor === 'string' && forwardedFor.trim()) {
@@ -881,6 +915,7 @@ async function handleApi(req, res, url) {
     const person = existing || { id, firstSeenAt: now, buzz: null, buzzCount: 0 };
     person.nickname = account ? account.nickname : (cleanText(body.nickname, 24) || 'Visiteur');
     person.accountNickname = account ? account.nickname : '';
+    person.accountId = account ? account.id : null;
     person.isAdmin = account ? account.isAdmin === true : false;
     person.activity = cleanText(body.activity, 60) || 'Sur le site';
     person.device = deviceLabel(req.headers['user-agent']);
@@ -903,6 +938,25 @@ async function handleApi(req, res, url) {
     return sendJson(res, 200, { id, buzz: buzz || null });
   }
 
+  // Le navigateur signale un bouton précis (clé de la liste blanche).
+  if (req.method === 'POST' && pathname === '/api/presence/action') {
+    const body = await readJson(req);
+    cleanOnlinePeople();
+    const person = onlinePeople.get(typeof body.id === 'string' ? body.id : '');
+    if (!person) return sendJson(res, 404, { error: 'Cette présence n’est plus active.' });
+    const text = UI_ACTIONS[body.action];
+    if (!text) return sendJson(res, 400, { error: 'Action inconnue.' });
+    logActivity({
+      nickname: person.nickname,
+      accountId: person.accountId || null,
+      kind: 'clic',
+      text,
+      dedupeKey: `clic:${person.id}:${body.action}`,
+      dedupeMs: 4000,
+    });
+    return sendJson(res, 200, { ok: true });
+  }
+
   if (req.method === 'GET' && pathname === '/api/admin/presence') {
     if (!activeAdminSessionKey(req.headers['x-admin-token'])) {
       return sendJson(res, 401, { error: 'La session administrateur a expiré. Saisis à nouveau le code.' });
@@ -910,7 +964,7 @@ async function handleApi(req, res, url) {
     cleanOnlinePeople();
     const people = [...onlinePeople.values()]
       .sort((a, b) => b.lastSeenAt - a.lastSeenAt)
-      .map(publicPresence);
+      .map((person) => ({ ...publicPresence(person), notes: notesForPerson(person) }));
     return sendJson(res, 200, { count: people.length, people, sounds: BUZZ_SOUNDS });
   }
 
@@ -1401,6 +1455,19 @@ async function handleApi(req, res, url) {
         room.chatMessages.splice(0, room.chatMessages.length - CHAT_MAX_MESSAGES);
       }
       saveRooms();
+      // Seul le tchat PUBLIC du salon est archivé pour la modération. Le tchat
+      // privé des loups et tout contenu de formulaire restent hors du journal.
+      logActivity({
+        nickname: player.nickname,
+        accountId: player.accountId || null,
+        kind: 'tchat',
+        text: isReaction
+          ? `a réagi ${text} dans le tchat de « ${room.title} »`
+          : `a écrit dans le tchat de « ${room.title} » : « ${text} »`,
+        dedupeKey: `tchat:${room.id}:${player.id}:${now}`,
+        dedupeMs: 0,
+        maxTextLength: 300,
+      });
       return sendJson(res, 201, { room: publicRoom(room, playerToken) });
     }
 

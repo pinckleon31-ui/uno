@@ -898,3 +898,131 @@ test('Le client ne capture aucune frappe clavier et ne transmet que des actions'
   assert.match(stylesheet, /\.admin-activity-item/);
   assert.match(stylesheet, /\.admin-activity-list/);
 });
+
+test('Bloc-notes : les clics et les mots du tchat public sont notés, pas les champs de saisie', async (t) => {
+  const { request } = await launchServer(t);
+  const unlocked = await request('/api/creator/unlock', {
+    method: 'POST',
+    body: { code: TEST_CREATOR_CODE },
+  });
+  const adminLogin = await request('/api/admin/login', {
+    method: 'POST',
+    body: { code: TEST_CREATOR_CODE },
+  });
+  const adminHeaders = { 'X-Admin-Token': adminLogin.data.token };
+
+  const account = await request('/api/accounts/register', {
+    method: 'POST',
+    body: { nickname: 'Nina', password: 'mon-mot-de-passe-prive' },
+  });
+  const accountHeaders = { 'X-Account-Token': account.data.token };
+
+  const presence = await request('/api/presence', {
+    method: 'POST',
+    headers: accountHeaders,
+    body: { nickname: 'Nina', activity: 'Accueil' },
+  });
+  const presenceId = presence.data.id;
+
+  // Clics suivis : la clé est traduite par le serveur.
+  const openedSolo = await request('/api/presence/action', {
+    method: 'POST',
+    body: { id: presenceId, action: 'jeux-solo' },
+  });
+  assert.equal(openedSolo.status, 200);
+  const launchedSnake = await request('/api/presence/action', {
+    method: 'POST',
+    body: { id: presenceId, action: 'solo-snake' },
+  });
+  assert.equal(launchedSnake.status, 200);
+
+  // Une clé inconnue est refusée : impossible d'écrire du texte libre.
+  const forbidden = await request('/api/presence/action', {
+    method: 'POST',
+    body: { id: presenceId, action: 'a tapé son mot de passe secret' },
+  });
+  assert.equal(forbidden.status, 400);
+  const wrongId = await request('/api/presence/action', {
+    method: 'POST',
+    body: { id: 'deadbeefdeadbeefdeadbeef', action: 'jeux-solo' },
+  });
+  assert.equal(wrongId.status, 404);
+
+  // Tchat public : les mots écrits sont archivés pour la modération.
+  const room = await request('/api/rooms', {
+    method: 'POST',
+    headers: { 'X-Creator-Ticket': unlocked.data.ticket, ...accountHeaders },
+    body: { title: 'Le salon bavard', game: 'morpion', maxPlayers: 2 },
+  });
+  const roomId = room.data.room.id;
+  const playerToken = room.data.playerToken;
+  const chat = await request(`/api/rooms/${roomId}/chat`, {
+    method: 'POST',
+    headers: { 'X-Player-Token': playerToken },
+    body: { message: 'Salut, on commence quand ?' },
+  });
+  assert.equal(chat.status, 201);
+
+  // ... mais le tchat privé des loups reste hors du journal.
+  const wolfRoute = await request(`/api/rooms/${roomId}/loup-garou/wolf-chat`, {
+    method: 'POST',
+    headers: { 'X-Player-Token': playerToken },
+    body: { message: 'mot secret des loups' },
+  });
+  assert.notEqual(wolfRoute.status, 201);
+
+  const journal = await request('/api/admin/activity?limit=100', { headers: adminHeaders });
+  const texts = journal.data.entries.map((entry) => entry.text);
+  assert.ok(texts.includes('a ouvert les jeux solo'), 'clic de navigation noté');
+  assert.ok(texts.includes('a lancé une partie de Snake'), 'lancement de jeu solo noté');
+  assert.ok(
+    journal.data.entries.some((entry) => entry.kind === 'tchat' && entry.text.includes('Salut, on commence quand ?')),
+    'message du tchat public archivé',
+  );
+  assert.ok(
+    !journal.data.entries.some((entry) => entry.kind === 'tchat' && entry.text.includes('mot secret des loups')),
+    'le tchat privé des loups n’est jamais archivé',
+  );
+
+  // Bloc-notes rattaché à la personne connectée.
+  const presenceList = await request('/api/admin/presence', { headers: adminHeaders });
+  const nina = presenceList.data.people.find((person) => person.nickname === 'Nina');
+  assert.ok(nina, 'Nina est en ligne');
+  assert.ok(Array.isArray(nina.notes) && nina.notes.length > 0, 'son bloc-notes est rempli');
+  const noteTexts = nina.notes.map((note) => note.text);
+  assert.ok(noteTexts.includes('a ouvert les jeux solo'));
+  assert.ok(noteTexts.includes('a lancé une partie de Snake'));
+  assert.ok(noteTexts.some((text) => text.includes('Salut, on commence quand ?')));
+  assert.ok(nina.notes.length <= 14);
+
+  // Aucun secret dans le journal ni dans la réponse.
+  const serialized = JSON.stringify(journal.data) + JSON.stringify(presenceList.data);
+  assert.ok(!serialized.includes('mon-mot-de-passe-prive'), 'aucun mot de passe');
+  assert.ok(!serialized.includes(TEST_CREATOR_CODE), 'aucun code organisateur');
+});
+
+test('Le suivi des clics n’envoie que des clés et ne lit jamais les champs de saisie', () => {
+  const script = fs.readFileSync(path.join(__dirname, '..', 'public', 'app.js'), 'utf8');
+
+  // La fonction de suivi n'envoie qu'un identifiant d'action.
+  assert.match(script, /function trackAction\(key, cooldown/);
+  assert.match(script, /body: \{ id: presenceId, action: key \}/);
+  assert.ok(!/trackAction\([^)]*\.value/.test(script), 'jamais la valeur d’un champ dans le suivi');
+  assert.ok(!/dataset\.value|\.value\s*\}\s*\)/.test(script.replace(/\n/g, ' ')), 'aucune valeur de champ transmise');
+
+  // Aucune capture globale de frappe.
+  assert.ok(!/['"]keypress['"]/.test(script));
+  assert.ok(!/['"]keyup['"]/.test(script));
+  assert.ok(!/beforeinput/.test(script));
+
+  // Le bloc-notes s'affiche à côté du nom.
+  assert.match(script, /admin-note-list/);
+  assert.match(script, /data-admin-note=/);
+  assert.match(script, /Bloc-notes/);
+  assert.match(script, /ses clics et ses messages apparaîtront ici/);
+
+  const stylesheet = fs.readFileSync(path.join(__dirname, '..', 'public', 'styles.css'), 'utf8');
+  assert.match(stylesheet, /\.admin-note \{/);
+  assert.match(stylesheet, /\.admin-note-item/);
+  assert.match(stylesheet, /\.admin-note-list/);
+});

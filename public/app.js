@@ -696,16 +696,45 @@
     }
   }
 
+  // Suivi des boutons : on n'envoie qu'une CLÉ de la liste blanche du serveur.
+  // Aucun contenu de champ, aucun texte saisi, aucune touche de clavier.
+  const DIALOG_ACTIONS = {
+    'account': 'compte',
+    'create-room': 'creation-partie',
+    'join-room': 'rejoindre-partie',
+    'creator-code': 'code-organisateur',
+    'solo-game': 'jeux-solo',
+    'room': 'accueil',
+    'admin-code': 'admin',
+    'admin-panel': 'admin',
+  };
+  const trackedActions = new Map();
+
+  function trackAction(key, cooldown = 60000) {
+    if (!key || !presenceId) return;
+    const now = Date.now();
+    if (now - (trackedActions.get(key) || 0) < cooldown) return;
+    trackedActions.set(key, now);
+    api('/api/presence/action', { method: 'POST', body: { id: presenceId, action: key } }).catch(() => {
+      // Le suivi est accessoire : une erreur ne doit jamais gêner le joueur.
+    });
+  }
+
   function openDialog(view, content, roomId = '') {
     dialog.dataset.view = view;
     dialog.dataset.roomId = roomId;
     dialogContent.innerHTML = content;
     dialog.classList.toggle('has-game-chat-layout', Boolean(dialogContent.querySelector('.game-chat')));
     if (!dialog.open) dialog.showModal();
+    if (view !== 'room' && DIALOG_ACTIONS[view]) trackAction(DIALOG_ACTIONS[view]);
   }
 
   function gameDialogIsFullscreen() {
     return document.fullscreenElement === dialog || dialog.classList.contains('is-game-fullscreen');
+  }
+
+  function trackFullscreen() {
+    trackAction('plein-ecran', 5000);
   }
 
   function updateFullscreenControls() {
@@ -723,6 +752,7 @@
   }
 
   async function toggleGameFullscreen() {
+    trackFullscreen();
     if (document.fullscreenElement === dialog) {
       try {
         await document.exitFullscreen();
@@ -863,6 +893,8 @@
 
   const ACTIVITY_ICONS = {
     visite: '🚪',
+    clic: '🖱️',
+    tchat: '💬',
     compte: '👤',
     salon: '🎪',
     partie: '🎮',
@@ -962,7 +994,9 @@
     if (!adminPresence.length) {
       return '<div class="admin-empty-state"><span aria-hidden="true">💤</span><strong>Personne en ligne pour le moment.</strong><small>Les personnes qui ouvrent le site apparaissent ici en quelques secondes.</small></div>';
     }
-    return adminPresence.map((person) => `
+    return adminPresence.map((person) => {
+      const notesForCard = Array.isArray(person.notes) ? person.notes : [];
+      return `
       <article class="admin-presence-card">
         <span class="admin-presence-dot" aria-hidden="true"></span>
         <span class="admin-presence-details">
@@ -970,6 +1004,17 @@
           <small>${escapeHtml(person.activity)} · ${escapeHtml(person.device)}</small>
           <small>En ligne depuis ${escapeHtml(presenceAge(person.firstSeenAt))} · vu il y a ${escapeHtml(presenceAge(person.lastSeenAt))}${person.buzzCount ? ` · ${person.buzzCount} son${person.buzzCount > 1 ? 's' : ''} envoyé${person.buzzCount > 1 ? 's' : ''}` : ''}</small>
         </span>
+        <details class="admin-note" data-admin-note="${escapeHtml(person.id)}">
+          <summary><span aria-hidden="true">📝</span> Bloc-notes <span class="admin-note-count">${notesForCard.length}</span></summary>
+          ${notesForCard.length
+            ? `<ol class="admin-note-list">${notesForCard.map((note) => `
+                <li class="admin-note-item" data-kind="${escapeHtml(note.kind)}">
+                  <span class="admin-note-time">${escapeHtml(formatActivityTime(note.at))}</span>
+                  <span class="admin-note-icon" aria-hidden="true">${ACTIVITY_ICONS[note.kind] || '•'}</span>
+                  <span class="admin-note-text">${escapeHtml(note.text)}</span>
+                </li>`).join('')}</ol>`
+            : '<p class="admin-note-empty">Rien encore : ses clics et ses messages apparaîtront ici.</p>'}
+        </details>
         <span class="admin-buzz-actions">
           ${BUZZ_BUTTONS.map(([sound, icon, label, variant]) => {
             const description = sound === 'mega'
@@ -978,12 +1023,24 @@
             return `<button class="button ${variant} admin-buzz-button${sound === 'mega' ? ' is-mega' : ''}" type="button" data-admin-buzz="${escapeHtml(person.id)}" data-admin-buzz-sound="${sound}" title="${escapeHtml(description)}" aria-label="${escapeHtml(description)}"><span aria-hidden="true">${icon}</span>${label}</button>`;
           }).join('')}
         </span>
-      </article>`).join('');
+      </article>`;
+    }).join('');
   }
 
   function updateAdminPresenceList() {
     const container = dialogContent.querySelector('[data-admin-presence-list]');
-    if (container) container.innerHTML = adminPresenceRows();
+    // Le rafraîchissement automatique ne doit pas refermer un bloc-notes ouvert.
+    const openNotes = new Set(
+      Array.from(dialogContent.querySelectorAll('[data-admin-note][open]')).map((element) => element.dataset.adminNote),
+    );
+    if (container) {
+      container.innerHTML = adminPresenceRows();
+      if (openNotes.size) {
+        container.querySelectorAll('[data-admin-note]').forEach((element) => {
+          if (openNotes.has(element.dataset.adminNote)) element.open = true;
+        });
+      }
+    }
     const counter = dialogContent.querySelector('[data-admin-presence-count]');
     if (counter) {
       counter.textContent = adminPresence.length === 1
@@ -1110,7 +1167,7 @@
             <h3>En ligne maintenant</h3>
             <span class="admin-presence-counter" data-admin-presence-count role="status" aria-live="polite"></span>
           </div>
-          <p class="admin-section-hint">Chaque personne a quatre boutons de son. Le bouton rouge <strong>📢 MÉGA</strong> déclenche une sirène très forte avec l’écran qui clignote.</p>
+          <p class="admin-section-hint">Chaque personne a quatre boutons de son. Le bouton rouge <strong>📢 MÉGA</strong> déclenche une sirène très forte avec l’écran qui clignote. Déplie <strong>📝 Bloc-notes</strong> sous un nom pour voir les boutons qu’il a cliqués et les messages qu’il a écrits dans le tchat public de son salon.</p>
           <button class="button button-danger admin-buzz-all" type="button" data-admin-buzz-all="mega"><span aria-hidden="true">📢</span> MÉGA à tout le monde</button>
           <div class="admin-presence-list" data-admin-presence-list></div>
         </section>
@@ -2283,6 +2340,7 @@
       selectedUnoCardId = '';
       activeRoomSnapshot = data.room;
       openDialog('room', roomDialog(data.room), roomId);
+      trackAction('salon');
     } catch (error) {
       if (error.status === 404 || error.status === 401) {
         forgetRoomToken(roomId);
@@ -3438,6 +3496,7 @@
     soloArcadeState.game.best = soloRecordFor(gameId, variant.id);
     if (keepDialog && dialog.dataset.view === 'solo-game') renderSoloGame();
     else openDialog('solo-game', soloGameDialog());
+    trackAction(`solo-${gameId}`, 20000);
     startSoloTicker();
     mobileNav.classList.remove('is-open');
     menuToggle.setAttribute('aria-expanded', 'false');
