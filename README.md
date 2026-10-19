@@ -12,7 +12,9 @@ CREATOR_CODE="choisir-un-code-prive" npm start
 
 Le serveur écoute sur le port `3000` par défaut. Pour en choisir un autre, définis aussi `PORT`.
 
-Pour le rendre accessible sur internet, tout est prêt : `Dockerfile`, `render.yaml`, `docker-compose.yml` et `Procfile`. Le pas-à-pas (Render, Railway, VPS avec HTTPS) est dans **[DEPLOIEMENT.md](DEPLOIEMENT.md)**.
+Pour le rendre accessible sur internet, tout est prêt : **Vercel** (`api/index.js` + `vercel.json`), `Dockerfile`, `render.yaml`, `docker-compose.yml` et `Procfile`. Le pas-à-pas (Vercel, Render, Railway, VPS avec HTTPS) est dans **[DEPLOIEMENT.md](DEPLOIEMENT.md)**.
+
+Sur un serveur classique, les données sont des fichiers JSON dans `DATA_DIR`. Sur Vercel, il n’y a pas de disque : le serveur bascule automatiquement sur une base Redis compatible Upstash/Vercel KV dès que `KV_REST_API_URL` et `KV_REST_API_TOKEN` sont définies, et en mémoire sinon (le site marche, mais repart à zéro). `/api/health` indique le mode retenu (`storage`).
 
 ## Fonctionnalités
 
@@ -47,4 +49,4 @@ Sous cette liste, le **journal d’activité** garde une note horodatée des vra
 
 Ce journal **n’enregistre aucune frappe au clavier**, ne lit jamais le contenu des champs de saisie et ne stocke ni mot de passe ni code organisateur : seules des phrases construites par le serveur au moment d’une action réussie y sont écrites. C’est un choix délibéré — un enregistrement des touches capterait les mots de passe des joueurs et serait illégal sans leur consentement explicite. Les tests vérifient qu’aucune frappe ne remonte au serveur et qu’aucun secret n’apparaît dans le fichier.
 
-Le stockage JSON convient à une seule instance du serveur ; pour un déploiement durable avec beaucoup de classes ou plusieurs instances, il faudra le remplacer par une base de données partagée. Les mélodies du Blind test sont des sons originaux synthétisés par le navigateur, sans catalogue musical externe. Lance `npm test` pour exécuter les tests des sept moteurs multijoueurs, des quatre jeux solo et de leurs variantes, du tchat et des API de bout en bout.
+Le stockage JSON convient à une seule instance du serveur (VPS, Docker, école). Pour plusieurs instances — c’est le cas sur Vercel — le même code utilise une base Redis partagée via `KV_REST_API_URL` et `KV_REST_API_TOKEN` ; sans elle, il tourne en mémoire. Les mélodies du Blind test sont des sons originaux synthétisés par le navigateur, sans catalogue musical externe. Lance `npm test` pour exécuter les tests des sept moteurs multijoueurs, des quatre jeux solo et de leurs variantes, du tchat et des API de bout en bout.

@@ -23,13 +23,46 @@ const ACCOUNTS_FILE = path.join(DATA_DIR, 'accounts.json');
 const ACTIVITY_FILE = path.join(DATA_DIR, 'activity.json');
 const HISTORY_FILE = path.join(DATA_DIR, 'history.json');
 
+// ---------------------------------------------------------------------------
+// Où vivent les données ?
+//   files  : fichiers JSON dans DATA_DIR (VPS, Docker, école, npm start)
+//   kv     : base Redis accessible en HTTP (Upstash / Vercel KV), pour Vercel
+//   memory : rien n'est écrit, tout repart à zéro au redémarrage
+// Sur Vercel (fonctions serverless), le disque est en lecture seule : sans
+// base KV, on bascule automatiquement en mémoire plutôt que de planter.
+// ---------------------------------------------------------------------------
+const KV_URL = String(process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL || '').replace(/\/+$/, '');
+const KV_TOKEN = String(process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN || '');
+const ON_VERCEL = Boolean(process.env.VERCEL);
+
+function resolveStorageMode() {
+  const requested = String(process.env.STORAGE || '').trim().toLowerCase();
+  if (['memory', 'memoire', 'mémoire'].includes(requested)) return 'memory';
+  if (['files', 'fichiers', 'file', 'disk'].includes(requested)) return 'files';
+  if (['kv', 'redis', 'upstash'].includes(requested)) return KV_URL && KV_TOKEN ? 'kv' : 'memory';
+  if (KV_URL && KV_TOKEN) return 'kv';
+  if (DATA_DIR === ':memory:') return 'memory';
+  if (ON_VERCEL) return 'memory';
+  return 'files';
+}
+
+const STORAGE_MODE = resolveStorageMode();
+const STORAGE_KEYS = Object.freeze({
+  rooms: 'recre-jeux:rooms',
+  accounts: 'recre-jeux:accounts',
+  history: 'recre-jeux:history',
+  activity: 'recre-jeux:activity',
+});
+
 // Crée le dossier de données dès le démarrage : sur un hébergeur, mieux vaut
 // un message clair tout de suite qu'une erreur au premier salon créé.
-try {
-  fs.mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
-} catch (error) {
-  console.error(`Impossible de créer le dossier de données ${DATA_DIR} :`, error.message);
-  process.exit(1);
+if (STORAGE_MODE === 'files') {
+  try {
+    fs.mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
+  } catch (error) {
+    console.error(`Impossible de créer le dossier de données ${DATA_DIR} :`, error.message);
+    process.exit(1);
+  }
 }
 const CREATOR_CODE = String(process.env.CREATOR_CODE || '').trim();
 const PRESENCE_TTL = 2 * 60 * 1000;
@@ -144,46 +177,48 @@ const CHAT_REACTIONS = new Set(['👏', '😂', '🤔', '🎉', '❤️', '🔥'
 const CHAT_EMOJIS = ['🦊', '🐼', '🐸', '🦉', '🐯', '🐙', '🐝', '🐳', '🦄', '🐢', '🐨', '🐵', '🐧', '🐬', '🐰', '🦋', '🐲', '🦖', '🐱', '🐻'];
 const CHAT_COLORS = ['#c2410c', '#6d28d9', '#0369a1', '#15803d', '#be185d', '#4338ca', '#a16207', '#0f766e', '#7e22ce', '#b91c1c', '#4d7c0f', '#a21caf', '#1d4ed8', '#c026d3', '#047857', '#b45309', '#7c3aed', '#0e7490', '#be123c', '#3f6212'];
 
-let rooms = loadRooms();
-let accounts = loadAccounts();
+// --- État gardé en mémoire, sauvegardé par le module de stockage ci-dessous ---
+let rooms = [];
+let accounts = [];
+let activityLog = [];
+let gameHistory = [];
+let stateLoaded = false;
+let lastHydratedAt = 0;
+
 const creatorTickets = new Map();
 const adminSessions = new Map();
 const onlinePeople = new Map();
-let activityLog = loadActivity();
-let gameHistory = loadHistory();
 const activityDedupe = new Map();
 const failedCodes = new Map();
 const failedAccountLogins = new Map();
 const chatLastSent = new Map();
 
-function loadRooms() {
+// Écritures en attente : `saveX()` marque simplement l'état comme modifié,
+// puis `flushWrites()` enregistre tout juste avant d'envoyer la réponse HTTP.
+const pendingWrites = new Set();
+
+function hashToken(token) {
+  return crypto.createHash('sha256').update(String(token)).digest('hex');
+}
+
+function parseRooms(text) {
+  if (typeof text !== 'string' || !text.trim()) return [];
   try {
-    const parsed = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
+    const parsed = JSON.parse(text);
     if (!parsed || !Array.isArray(parsed.rooms)) return [];
     return parsed.rooms.filter((room) => (
       room && typeof room.id === 'string' && Array.isArray(room.players)
     ));
   } catch (error) {
-    if (error.code !== 'ENOENT') {
-      console.error('Impossible de lire les salons enregistrés :', error.message);
-    }
+    console.error('Impossible de lire les salons enregistrés :', error.message);
     return [];
   }
 }
 
-function saveRooms() {
-  fs.mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
-  fs.writeFileSync(DATA_FILE, JSON.stringify({ rooms }, null, 2), { mode: 0o600 });
+function parseAccounts(text) {
+  if (typeof text !== 'string' || !text.trim()) return [];
   try {
-    fs.chmodSync(DATA_FILE, 0o600);
-  } catch {
-    // Les permissions POSIX ne sont pas disponibles sur tous les systèmes.
-  }
-}
-
-function loadAccounts() {
-  try {
-    const parsed = JSON.parse(fs.readFileSync(ACCOUNTS_FILE, 'utf8'));
+    const parsed = JSON.parse(text);
     if (!parsed || !Array.isArray(parsed.accounts)) return [];
     return parsed.accounts
       .filter((account) => (
@@ -200,53 +235,27 @@ function loadAccounts() {
         sessions: Array.isArray(account.sessions) ? account.sessions : [],
       }));
   } catch (error) {
-    if (error.code !== 'ENOENT') {
-      console.error('Impossible de lire les comptes enregistrés :', error.message);
-    }
+    console.error('Impossible de lire les comptes enregistrés :', error.message);
     return [];
   }
 }
 
-function saveAccounts() {
-  fs.mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
-  fs.writeFileSync(ACCOUNTS_FILE, JSON.stringify({ accounts }, null, 2), { mode: 0o600 });
+function parseHistory(text) {
+  if (typeof text !== 'string' || !text.trim()) return [];
   try {
-    fs.chmodSync(ACCOUNTS_FILE, 0o600);
-  } catch {
-    // Les permissions POSIX ne sont pas disponibles sur tous les systèmes.
-  }
-}
-
-function loadHistory() {
-  try {
-    const parsed = JSON.parse(fs.readFileSync(HISTORY_FILE, 'utf8'));
+    const parsed = JSON.parse(text);
     if (!parsed || !Array.isArray(parsed.games)) return [];
     return parsed.games.filter((game) => game && typeof game.roomId === 'string').slice(0, MAX_HISTORY_ENTRIES);
   } catch (error) {
-    if (error.code !== 'ENOENT') {
-      console.error('Impossible de lire l’historique des parties :', error.message);
-    }
+    console.error('Impossible de lire l’historique des parties :', error.message);
     return [];
   }
 }
 
-function saveHistory() {
-  fs.mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
-  fs.writeFileSync(HISTORY_FILE, JSON.stringify({ games: gameHistory }, null, 2), { mode: 0o600 });
+function parseActivity(text) {
+  if (typeof text !== 'string' || !text.trim()) return [];
   try {
-    fs.chmodSync(HISTORY_FILE, 0o600);
-  } catch {
-    // Les permissions POSIX ne sont pas disponibles sur tous les systèmes.
-  }
-}
-
-function hashToken(token) {
-  return crypto.createHash('sha256').update(String(token)).digest('hex');
-}
-
-function loadActivity() {
-  try {
-    const parsed = JSON.parse(fs.readFileSync(ACTIVITY_FILE, 'utf8'));
+    const parsed = JSON.parse(text);
     if (!parsed || !Array.isArray(parsed.entries)) return [];
     return parsed.entries
       .filter((entry) => (
@@ -254,21 +263,166 @@ function loadActivity() {
       ))
       .slice(0, MAX_ACTIVITY_ENTRIES);
   } catch (error) {
-    if (error.code !== 'ENOENT') {
-      console.error('Impossible de lire le journal d’activité :', error.message);
-    }
+    console.error('Impossible de lire le journal d’activité :', error.message);
     return [];
   }
 }
 
-function saveActivity() {
-  fs.mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
-  fs.writeFileSync(ACTIVITY_FILE, JSON.stringify({ entries: activityLog }, null, 2), { mode: 0o600 });
+function payloadOf(kind) {
+  if (kind === 'rooms') return { rooms };
+  if (kind === 'accounts') return { accounts };
+  if (kind === 'history') return { games: gameHistory };
+  return { entries: activityLog };
+}
+
+function applyPayload(kind, text) {
+  if (kind === 'rooms') rooms = parseRooms(text);
+  else if (kind === 'accounts') accounts = parseAccounts(text);
+  else if (kind === 'history') gameHistory = parseHistory(text);
+  else activityLog = parseActivity(text);
+}
+
+const DATA_FILE_BY_KIND = {
+  rooms: () => DATA_FILE,
+  accounts: () => ACCOUNTS_FILE,
+  history: () => HISTORY_FILE,
+  activity: () => ACTIVITY_FILE,
+};
+
+function readFileIfExists(file) {
   try {
-    fs.chmodSync(ACTIVITY_FILE, 0o600);
+    return fs.readFileSync(file, 'utf8');
+  } catch (error) {
+    if (error.code !== 'ENOENT') {
+      console.error(`Impossible de lire ${file} :`, error.message);
+    }
+    return '';
+  }
+}
+
+function writeStateFile(file, payload) {
+  fs.mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
+  fs.writeFileSync(file, JSON.stringify(payload, null, 2), { mode: 0o600 });
+  try {
+    fs.chmodSync(file, 0o600);
   } catch {
     // Les permissions POSIX ne sont pas disponibles sur tous les systèmes.
   }
+}
+
+// Requête HTTP vers une base compatible Upstash Redis (Vercel KV, Upstash…).
+// Le corps est un tableau de commandes : [["set","clé","valeur"], ["get","clé"]].
+async function kvPipeline(commands) {
+  if (!KV_URL || !KV_TOKEN) throw new Error('base KV non configurée');
+  const response = await fetch(`${KV_URL}/pipeline`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${KV_TOKEN}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(commands),
+  });
+  if (!response.ok) {
+    throw new Error(`réponse ${response.status} de la base KV`);
+  }
+  const data = await response.json();
+  if (!Array.isArray(data)) throw new Error('réponse inattendue de la base KV');
+  const failed = data.find((item) => item && item.error);
+  if (failed) throw new Error(String(failed.error));
+  return data.map((item) => (item && Object.prototype.hasOwnProperty.call(item, 'result') ? item.result : null));
+}
+
+async function loadState() {
+  if (stateLoaded) return;
+  stateLoaded = true;
+  if (STORAGE_MODE === 'memory') {
+    console.log('Stockage : mémoire (les données repartiront à zéro au redémarrage).');
+    return;
+  }
+  try {
+    if (STORAGE_MODE === 'kv') {
+      const [roomsText, accountsText, historyText, activityText] = await kvPipeline([
+        ['get', STORAGE_KEYS.rooms],
+        ['get', STORAGE_KEYS.accounts],
+        ['get', STORAGE_KEYS.history],
+        ['get', STORAGE_KEYS.activity],
+      ]);
+      applyPayload('rooms', roomsText);
+      applyPayload('accounts', accountsText);
+      applyPayload('history', historyText);
+      applyPayload('activity', activityText);
+      console.log('Stockage : base KV (données partagées entre les instances).');
+    } else {
+      applyPayload('rooms', readFileIfExists(DATA_FILE));
+      applyPayload('accounts', readFileIfExists(ACCOUNTS_FILE));
+      applyPayload('history', readFileIfExists(HISTORY_FILE));
+      applyPayload('activity', readFileIfExists(ACTIVITY_FILE));
+      console.log(`Stockage : fichiers JSON dans ${DATA_DIR}.`);
+    }
+    lastHydratedAt = Date.now();
+  } catch (error) {
+    console.error('Impossible de charger les données :', error.message);
+  }
+}
+
+// Sur Vercel, deux requêtes peuvent tomber sur deux instances : on relit la
+// base de temps en temps pour que tout le monde voie les mêmes salons.
+const HYDRATE_INTERVAL = 800;
+
+async function hydrateFromStore() {
+  if (STORAGE_MODE !== 'kv' || !stateLoaded) return;
+  const now = Date.now();
+  if (now - lastHydratedAt < HYDRATE_INTERVAL) return;
+  lastHydratedAt = now;
+  try {
+    const [roomsText, accountsText, historyText, activityText] = await kvPipeline([
+      ['get', STORAGE_KEYS.rooms],
+      ['get', STORAGE_KEYS.accounts],
+      ['get', STORAGE_KEYS.history],
+      ['get', STORAGE_KEYS.activity],
+    ]);
+    if (pendingWrites.size > 0) return;
+    if (typeof roomsText === 'string') rooms = parseRooms(roomsText);
+    if (typeof accountsText === 'string') accounts = parseAccounts(accountsText);
+    if (typeof historyText === 'string') gameHistory = parseHistory(historyText);
+    if (typeof activityText === 'string') activityLog = parseActivity(activityText);
+  } catch (error) {
+    console.error('Lecture de la base KV impossible :', error.message);
+  }
+}
+
+async function flushWrites() {
+  if (pendingWrites.size === 0) return;
+  const kinds = [...pendingWrites];
+  pendingWrites.clear();
+  if (STORAGE_MODE === 'memory') return;
+  try {
+    if (STORAGE_MODE === 'kv') {
+      await kvPipeline(kinds.map((kind) => ['set', STORAGE_KEYS[kind], JSON.stringify(payloadOf(kind))]));
+    } else {
+      for (const kind of kinds) writeStateFile(DATA_FILE_BY_KIND[kind](), payloadOf(kind));
+    }
+  } catch (error) {
+    for (const kind of kinds) pendingWrites.add(kind);
+    throw new Error(`Les données n’ont pas pu être enregistrées : ${error.message}`);
+  }
+}
+
+// Les sauvegardes sont différées jusqu'à la réponse HTTP (voir `sendJson`).
+function saveRooms() {
+  pendingWrites.add('rooms');
+}
+
+function saveAccounts() {
+  pendingWrites.add('accounts');
+}
+
+function saveHistory() {
+  pendingWrites.add('history');
+}
+
+function saveActivity() {
+  pendingWrites.add('activity');
 }
 
 // Enregistre UNE action lisible. `dedupeKey` évite les doublons quand le
@@ -673,13 +827,6 @@ function deviceLabel(userAgent) {
   return 'Ordinateur';
 }
 
-function cleanText(value, maxLength) {
-  return String(value ?? '')
-    .replace(/[\u0000-\u001f\u007f]/g, ' ')
-    .trim()
-    .slice(0, maxLength);
-}
-
 function publicPresence(person) {
   return {
     id: person.id,
@@ -736,7 +883,18 @@ function setSecurityHeaders(res) {
   );
 }
 
-function sendJson(res, statusCode, data) {
+// `sendJson` enregistre d'abord les modifications en attente (fichier ou
+// base KV) : le navigateur ne reçoit « c'est fait » que quand c'est écrit.
+async function sendJson(res, statusCode, data) {
+  try {
+    await flushWrites();
+  } catch (error) {
+    console.error(error.message);
+    if (statusCode < 500) {
+      statusCode = 500;
+      data = { error: 'Les données n’ont pas pu être enregistrées. Réessaie dans un instant.' };
+    }
+  }
   const body = Buffer.from(JSON.stringify(data));
   res.statusCode = statusCode;
   res.setHeader('Content-Type', 'application/json; charset=utf-8');
@@ -751,7 +909,30 @@ function httpError(statusCode, message) {
   return error;
 }
 
+function parseJsonBody(text) {
+  if (!text || !String(text).trim()) return {};
+  let parsed;
+  try {
+    parsed = JSON.parse(String(text));
+  } catch {
+    throw httpError(400, 'La demande envoyée est invalide.');
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw httpError(400, 'La demande envoyée est invalide.');
+  }
+  return parsed;
+}
+
 async function readJson(req) {
+  // Sur Vercel, le corps JSON est déjà lu par la plateforme et disponible
+  // dans `req.body` : le flux d'origine est vide, il faut donc le réutiliser.
+  const preParsed = req.body;
+  if (preParsed !== undefined && preParsed !== null) {
+    if (Buffer.isBuffer(preParsed) || typeof preParsed === 'string') return parseJsonBody(preParsed.toString());
+    if (typeof preParsed === 'object' && !Array.isArray(preParsed)) return preParsed;
+    throw httpError(400, 'La demande envoyée est invalide.');
+  }
+
   const chunks = [];
   let size = 0;
   for await (const chunk of req) {
@@ -760,16 +941,7 @@ async function readJson(req) {
     chunks.push(chunk);
   }
   if (size === 0) return {};
-  let parsed;
-  try {
-    parsed = JSON.parse(Buffer.concat(chunks).toString('utf8'));
-  } catch {
-    throw httpError(400, 'La demande envoyée est invalide.');
-  }
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    throw httpError(400, 'La demande envoyée est invalide.');
-  }
-  return parsed;
+  return parseJsonBody(Buffer.concat(chunks).toString('utf8'));
 }
 
 function transferHostIfNeeded(room, departingPlayerId) {
@@ -785,7 +957,12 @@ async function handleApi(req, res, url) {
 
   if (req.method === 'GET' && pathname === '/api/health') {
     cleanRooms();
-    return sendJson(res, 200, { ok: true, rooms: rooms.length });
+    return sendJson(res, 200, {
+      ok: true,
+      rooms: rooms.length,
+      storage: STORAGE_MODE,
+      persistent: STORAGE_MODE !== 'memory',
+    });
   }
 
   if (req.method === 'POST' && pathname === '/api/creator/unlock') {
@@ -2343,11 +2520,27 @@ function serveStatic(req, res, pathname) {
   return res.end(req.method === 'HEAD' ? undefined : file);
 }
 
-const server = http.createServer(async (req, res) => {
+// Sur Vercel, une règle `rewrites` envoie /api/… vers /api/index en gardant le
+// chemin d'origine dans ?__route=. On le remet ici pour retrouver l'URL réelle.
+const ROUTE_PARAM = '__route';
+
+function resolveRequestUrl(req) {
+  const url = new URL(req.url || '/', 'http://localhost');
+  const route = url.searchParams.get(ROUTE_PARAM);
+  if (route === null) return url;
+  url.searchParams.delete(ROUTE_PARAM);
+  const query = url.searchParams.toString();
+  const pathname = `/api/${route}`.replace(/\/{2,}/g, '/');
+  return new URL(`${pathname}${query ? `?${query}` : ''}`, 'http://localhost');
+}
+
+async function handleRequest(req, res) {
   setSecurityHeaders(res);
   try {
-    const url = new URL(req.url, 'http://localhost');
+    await loadState();
+    const url = resolveRequestUrl(req);
     if (url.pathname.startsWith('/api/')) {
+      await hydrateFromStore();
       return await handleApi(req, res, url);
     }
     return serveStatic(req, res, url.pathname);
@@ -2362,13 +2555,34 @@ const server = http.createServer(async (req, res) => {
       error: statusCode === 500 ? 'Un problème est survenu. Réessaie dans un instant.' : error.message,
     });
   }
-});
+}
 
-server.listen(PORT, HOST, () => {
-  const address = server.address();
-  const listeningPort = address && typeof address === 'object' ? address.port : PORT;
-  console.log(`Récré’Jeux est disponible sur http://${HOST}:${listeningPort}`);
-  if (!CREATOR_CODE) {
-    console.warn('Définis CREATOR_CODE dans l’environnement pour activer la création de salons.');
-  }
-});
+const server = http.createServer(handleRequest);
+
+async function start() {
+  await loadState();
+  server.listen(PORT, HOST, () => {
+    const address = server.address();
+    const listeningPort = address && typeof address === 'object' ? address.port : PORT;
+    console.log(`Récré’Jeux est disponible sur http://${HOST}:${listeningPort}`);
+    if (!CREATOR_CODE) {
+      console.warn('Définis CREATOR_CODE dans l’environnement pour activer la création de salons.');
+    }
+  });
+  return server;
+}
+
+// `node server.js` démarre un serveur classique ; sur Vercel (ou quand un
+// autre fichier fait `require('./server.js')`), on exporte seulement le
+// gestionnaire HTTP, sans ouvrir de port.
+if (require.main === module) {
+  start();
+}
+
+module.exports = {
+  handler: handleRequest,
+  createServer: () => http.createServer(handleRequest),
+  start,
+  server,
+  storageMode: STORAGE_MODE,
+};

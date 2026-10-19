@@ -1,0 +1,12 @@
+# Rien à compiler : Vercel sert public/ en statique et api/index.js en fonction.
+.git
+.data
+test
+node_modules
+npm-debug.log*
+Dockerfile
+docker-compose.yml
+.dockerignore
+Procfile
+render.yaml
+DEPLOIEMENT.md
