@@ -95,6 +95,9 @@
   let adminPresenceTimerId = 0;
   let buzzAudioContext = null;
   let adminAccounts = [];
+  let adminActivity = [];
+  let adminActivityPeople = [];
+  let adminActivityFilter = '';
   let toastTimer = 0;
   let roomTokens = readSession(TOKEN_STORAGE_KEY, {});
   let accountToken = typeof cachedAccountSession.token === 'string' ? cachedAccountSession.token : '';
@@ -858,6 +861,103 @@
     ['mega', '📢', 'MÉGA', 'button-danger'],
   ];
 
+  const ACTIVITY_ICONS = {
+    visite: '🚪',
+    compte: '👤',
+    salon: '🎪',
+    partie: '🎮',
+    victoire: '🏆',
+    admin: '🛡️',
+  };
+
+  function formatActivityTime(timestamp) {
+    const date = new Date(Number(timestamp));
+    if (!Number.isFinite(date.getTime())) return '';
+    const time = new Intl.DateTimeFormat('fr-FR', { hour: '2-digit', minute: '2-digit' }).format(date);
+    const startOfToday = new Date();
+    startOfToday.setHours(0, 0, 0, 0);
+    if (date >= startOfToday) return time;
+    const day = new Intl.DateTimeFormat('fr-FR', { day: '2-digit', month: '2-digit' }).format(date);
+    return `${day} ${time}`;
+  }
+
+  function adminActivityRows() {
+    if (!adminActivity.length) {
+      return `<div class="admin-empty-state"><span aria-hidden="true">📝</span><strong>Journal vide pour le moment.</strong><small>Les connexions, salons et parties apparaîtront ici dès qu’un joueur agira.</small></div>`;
+    }
+    return adminActivity.map((entry) => `
+      <li class="admin-activity-item" data-kind="${escapeHtml(entry.kind)}">
+        <span class="admin-activity-icon" aria-hidden="true">${ACTIVITY_ICONS[entry.kind] || '•'}</span>
+        <span class="admin-activity-body">
+          <span class="admin-activity-time">${escapeHtml(formatActivityTime(entry.at))}</span>
+          <span class="admin-activity-text"><strong>${escapeHtml(entry.nickname)}</strong> ${escapeHtml(entry.text)}</span>
+        </span>
+      </li>`).join('');
+  }
+
+  function updateAdminActivityList() {
+    const container = dialogContent.querySelector('[data-admin-activity-list]');
+    if (container) container.innerHTML = adminActivityRows();
+    const counter = dialogContent.querySelector('[data-admin-activity-count]');
+    if (counter) counter.textContent = adminActivity.length === 1 ? '1 action' : `${adminActivity.length} actions`;
+    const select = dialogContent.querySelector('[data-admin-activity-filter]');
+    if (select) {
+      const options = ['<option value="">Tout le monde</option>'].concat(
+        adminActivityPeople.map((name) => `<option value="${escapeHtml(name)}"${name === adminActivityFilter ? ' selected' : ''}>${escapeHtml(name)}</option>`),
+      );
+      if (adminActivityFilter && !adminActivityPeople.includes(adminActivityFilter)) {
+        options.push(`<option value="${escapeHtml(adminActivityFilter)}" selected>${escapeHtml(adminActivityFilter)}</option>`);
+      }
+      select.innerHTML = options.join('');
+    }
+  }
+
+  async function refreshAdminActivity() {
+    if (!adminToken || dialog.dataset.view !== 'admin-panel') return;
+    try {
+      const query = adminActivityFilter ? `&person=${encodeURIComponent(adminActivityFilter)}` : '';
+      const data = await api(`/api/admin/activity?limit=100${query}`, { headers: { 'X-Admin-Token': adminToken } });
+      adminActivity = Array.isArray(data.entries) ? data.entries : [];
+      adminActivityPeople = Array.isArray(data.people) ? data.people : [];
+      if (dialog.dataset.view === 'admin-panel') updateAdminActivityList();
+    } catch (error) {
+      if (error.status === 401) adminToken = '';
+    }
+  }
+
+  async function clearAdminActivity(button) {
+    button.disabled = true;
+    try {
+      await api('/api/admin/activity', { method: 'DELETE', headers: { 'X-Admin-Token': adminToken } });
+      adminActivityFilter = '';
+      await refreshAdminActivity();
+      showToast('Journal d’activité vidé.', 'info');
+    } catch (error) {
+      if (error.status === 401) {
+        adminToken = '';
+        adminCodeDialog(error.message);
+        return;
+      }
+      showToast(error.message, 'error');
+    } finally {
+      if (button.isConnected) button.disabled = false;
+    }
+  }
+
+  async function copyAdminActivity(button) {
+    const lines = adminActivity.map((entry) => (
+      `${formatActivityTime(entry.at)} · ${entry.nickname} ${entry.text}`
+    ));
+    const text = lines.length ? lines.join('\n') : 'Journal d’activité vide.';
+    try {
+      await navigator.clipboard.writeText(text);
+      showToast(`${lines.length} ligne${lines.length > 1 ? 's' : ''} copiée${lines.length > 1 ? 's' : ''}.`, 'success');
+    } catch {
+      showToast('Copie impossible sur ce navigateur.', 'error');
+    }
+    if (button.isConnected) button.disabled = false;
+  }
+
   function adminPresenceRows() {
     if (!adminPresence.length) {
       return '<div class="admin-empty-state"><span aria-hidden="true">💤</span><strong>Personne en ligne pour le moment.</strong><small>Les personnes qui ouvrent le site apparaissent ici en quelques secondes.</small></div>';
@@ -911,6 +1011,7 @@
         return;
       }
       refreshAdminPresence();
+      refreshAdminActivity();
     }, 5000);
   }
 
@@ -1013,6 +1114,20 @@
           <button class="button button-danger admin-buzz-all" type="button" data-admin-buzz-all="mega"><span aria-hidden="true">📢</span> MÉGA à tout le monde</button>
           <div class="admin-presence-list" data-admin-presence-list></div>
         </section>
+        <section class="admin-activity-section" aria-label="Journal d’activité">
+          <div class="admin-section-head">
+            <h3>Journal d’activité</h3>
+            <span class="admin-presence-counter" data-admin-activity-count role="status" aria-live="polite"></span>
+          </div>
+          <p class="admin-section-hint">Les vraies actions des joueurs, heure par heure : arrivées, connexions, salons, parties, victoires et gestes admin. <strong>Aucune touche de clavier n’est enregistrée</strong>, ni les mots de passe.</p>
+          <div class="admin-activity-toolbar">
+            <label class="admin-activity-filter-label" for="admin-activity-filter">Filtrer par joueur</label>
+            <select class="form-input admin-activity-filter" id="admin-activity-filter" data-admin-activity-filter></select>
+            <button class="button button-muted" type="button" data-admin-activity-copy>Copier</button>
+            <button class="button button-danger" type="button" data-admin-activity-clear>Vider le journal</button>
+          </div>
+          <ol class="admin-activity-list" data-admin-activity-list></ol>
+        </section>
         <div class="admin-section-head"><h3>Comptes joueurs</h3></div>
         <div class="admin-account-list" aria-label="Comptes joueurs">
           ${accountRows || '<div class="admin-empty-state"><span aria-hidden="true">☺</span><strong>Aucun compte pour le moment.</strong><small>Les comptes créés apparaîtront ici.</small></div>'}
@@ -1028,14 +1143,18 @@
     }
     openDialog('admin-panel', '<div class="loading-modal"><span class="loading-spinner" aria-hidden="true"></span>Chargement des comptes…</div>');
     try {
-      const [data, presence] = await Promise.all([
+      const [data, presence, activity] = await Promise.all([
         api('/api/admin/accounts', { headers: { 'X-Admin-Token': adminToken } }),
         api('/api/admin/presence', { headers: { 'X-Admin-Token': adminToken } }).catch(() => ({ people: [] })),
+        api('/api/admin/activity?limit=100', { headers: { 'X-Admin-Token': adminToken } }).catch(() => ({ entries: [], people: [] })),
       ]);
       if (dialog.dataset.view !== 'admin-panel') return;
       adminPresence = Array.isArray(presence.people) ? presence.people : [];
+      adminActivity = Array.isArray(activity.entries) ? activity.entries : [];
+      adminActivityPeople = Array.isArray(activity.people) ? activity.people : [];
       renderAdminPanel(data);
       updateAdminPresenceList();
+      updateAdminActivityList();
       startAdminPresenceRefresh();
     } catch (error) {
       if (dialog.dataset.view !== 'admin-panel') return;
@@ -3574,6 +3693,18 @@
       return;
     }
 
+    const clearActivityButton = event.target.closest('[data-admin-activity-clear]');
+    if (clearActivityButton) {
+      clearAdminActivity(clearActivityButton);
+      return;
+    }
+
+    const copyActivityButton = event.target.closest('[data-admin-activity-copy]');
+    if (copyActivityButton) {
+      copyAdminActivity(copyActivityButton);
+      return;
+    }
+
     const adminRenameButton = event.target.closest('[data-admin-rename]');
     if (adminRenameButton) {
       renameAdminAccount(adminRenameButton.dataset.adminRename);
@@ -3795,6 +3926,10 @@
 
   dialog.addEventListener('change', (event) => {
     if (event.target.matches('input[name="game"]')) setGamePlayerBounds(event.target.value);
+    if (event.target.matches('[data-admin-activity-filter]')) {
+      adminActivityFilter = event.target.value;
+      refreshAdminActivity();
+    }
   });
 
   searchInput.addEventListener('input', () => {

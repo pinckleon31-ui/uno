@@ -18,6 +18,7 @@ const PUBLIC_DIR = path.join(__dirname, 'public');
 const DATA_DIR = path.resolve(process.env.DATA_DIR || path.join(__dirname, '.data'));
 const DATA_FILE = path.join(DATA_DIR, 'rooms.json');
 const ACCOUNTS_FILE = path.join(DATA_DIR, 'accounts.json');
+const ACTIVITY_FILE = path.join(DATA_DIR, 'activity.json');
 const CREATOR_CODE = String(process.env.CREATOR_CODE || '').trim();
 const PRESENCE_TTL = 2 * 60 * 1000;
 const ACCOUNT_SESSION_TTL = 30 * 24 * 60 * 60 * 1000;
@@ -35,6 +36,22 @@ const ADMIN_SESSION_TTL = 30 * 60 * 1000;
 const ONLINE_TTL = 40 * 1000;
 const MAX_ONLINE_ENTRIES = 400;
 const BUZZ_SOUNDS = ['cloche', 'alarme', 'tada', 'mega'];
+const BUZZ_SOUND_LABELS = Object.freeze({
+  cloche: '🔔 Cloche',
+  alarme: '🚨 Alarme',
+  tada: '🎉 Tada',
+  mega: '📢 MÉGA',
+});
+
+function soundLabel(sound) {
+  return BUZZ_SOUND_LABELS[sound] || String(sound || '');
+}
+
+// Le journal garde les actions utiles (connexion, salons, parties, victoires,
+// gestes admin). Il ne contient JAMAIS de frappe au clavier, de mot de passe,
+// ni le code organisateur.
+const MAX_ACTIVITY_ENTRIES = 600;
+const ACTIVITY_KINDS = Object.freeze(['visite', 'compte', 'salon', 'partie', 'victoire', 'admin']);
 const CODE_LOCK_DURATION = 10 * 60 * 1000;
 const MAX_FAILED_CODES = 5;
 const MAX_BODY_SIZE = 16 * 1024;
@@ -61,6 +78,8 @@ let accounts = loadAccounts();
 const creatorTickets = new Map();
 const adminSessions = new Map();
 const onlinePeople = new Map();
+let activityLog = loadActivity();
+const activityDedupe = new Map();
 const failedCodes = new Map();
 const failedAccountLogins = new Map();
 const chatLastSent = new Map();
@@ -127,6 +146,65 @@ function saveAccounts() {
 
 function hashToken(token) {
   return crypto.createHash('sha256').update(String(token)).digest('hex');
+}
+
+function loadActivity() {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(ACTIVITY_FILE, 'utf8'));
+    if (!parsed || !Array.isArray(parsed.entries)) return [];
+    return parsed.entries
+      .filter((entry) => (
+        entry && typeof entry.nickname === 'string' && typeof entry.text === 'string' && Number.isFinite(entry.at)
+      ))
+      .slice(0, MAX_ACTIVITY_ENTRIES);
+  } catch (error) {
+    if (error.code !== 'ENOENT') {
+      console.error('Impossible de lire le journal d’activité :', error.message);
+    }
+    return [];
+  }
+}
+
+function saveActivity() {
+  fs.mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
+  fs.writeFileSync(ACTIVITY_FILE, JSON.stringify({ entries: activityLog }, null, 2), { mode: 0o600 });
+  try {
+    fs.chmodSync(ACTIVITY_FILE, 0o600);
+  } catch {
+    // Les permissions POSIX ne sont pas disponibles sur tous les systèmes.
+  }
+}
+
+// Enregistre UNE action lisible. `dedupeKey` évite les doublons quand le
+// navigateur renvoie plusieurs fois la même requête en quelques secondes.
+// Ne jamais passer ici un mot de passe, un code ou une frappe de clavier.
+function logActivity({ nickname, accountId = null, kind = 'visite', text, dedupeKey = '', dedupeMs = 5000 }) {
+  const safeNickname = cleanText(nickname, 18) || 'Visiteur';
+  const safeText = cleanText(text, 160);
+  if (!safeText || !ACTIVITY_KINDS.includes(kind)) return null;
+  const now = Date.now();
+  if (dedupeKey) {
+    const lastAt = activityDedupe.get(dedupeKey) || 0;
+    if (now - lastAt < dedupeMs) return null;
+    activityDedupe.set(dedupeKey, now);
+    if (activityDedupe.size > 500) {
+      for (const [key, at] of activityDedupe) {
+        if (now - at > 60 * 60 * 1000) activityDedupe.delete(key);
+      }
+    }
+  }
+  const entry = {
+    id: crypto.randomBytes(8).toString('hex'),
+    at: now,
+    nickname: safeNickname,
+    accountId: accountId || null,
+    kind,
+    text: safeText,
+  };
+  activityLog.unshift(entry);
+  if (activityLog.length > MAX_ACTIVITY_ENTRIES) activityLog.length = MAX_ACTIVITY_ENTRIES;
+  saveActivity();
+  return entry;
 }
 
 function sameSecret(left, right) {
@@ -264,6 +342,16 @@ function recordRoomVictory(room) {
     if (account) {
       account.wins = (Number(account.wins) || 0) + 1;
       accountsChanged = true;
+    }
+    if (winner) {
+      logActivity({
+        nickname: winner.nickname,
+        accountId: winner.accountId || null,
+        kind: 'victoire',
+        text: `a gagné une partie de ${GAMES[room.game]?.label || room.game} dans « ${room.title} »`,
+        dedupeKey: `victoire:${room.id}:${winnerId}:${state.startedAt}`,
+        dedupeMs: 600000,
+      });
     }
   }
   if (accountsChanged) saveAccounts();
@@ -685,6 +773,12 @@ async function handleApi(req, res, url) {
         }
       }
       if (roomsChanged) saveRooms();
+      logActivity({
+        nickname: 'Organisateur',
+        kind: 'admin',
+        text: `a supprimé le compte « ${account.nickname} »`,
+        dedupeKey: `suppression:${account.id}`,
+      });
       return sendJson(res, 200, {
         ok: true,
         deleted: { id: account.id, nickname: account.nickname },
@@ -707,6 +801,7 @@ async function handleApi(req, res, url) {
     }
 
     let nicknameChanged = false;
+    const previousNickname = account.nickname;
     if (hasNickname) {
       const nickname = cleanText(body.nickname, 18);
       const nicknameLength = Array.from(nickname).length;
@@ -725,6 +820,30 @@ async function handleApi(req, res, url) {
     if (hasCheaterRole) account.isCheater = body.isCheater;
 
     saveAccounts();
+    if (nicknameChanged) {
+      logActivity({
+        nickname: 'Organisateur',
+        kind: 'admin',
+        text: `a renommé le compte « ${previousNickname} » en « ${account.nickname} »`,
+        dedupeKey: `renommage:${account.id}:${account.nickname}`,
+      });
+    }
+    if (hasAdminRole) {
+      logActivity({
+        nickname: 'Organisateur',
+        kind: 'admin',
+        text: `${body.isAdmin ? 'a donné' : 'a retiré'} le rôle administrateur ${body.isAdmin ? 'à' : 'de'} « ${account.nickname} »`,
+        dedupeKey: `role-admin:${account.id}:${body.isAdmin}`,
+      });
+    }
+    if (hasCheaterRole) {
+      logActivity({
+        nickname: 'Organisateur',
+        kind: 'admin',
+        text: `${body.isCheater ? 'a donné' : 'a retiré'} le rôle tricheur ${body.isCheater ? 'à' : 'de'} « ${account.nickname} »`,
+        dedupeKey: `role-tricheur:${account.id}:${body.isCheater}`,
+      });
+    }
     if (nicknameChanged) {
       let roomsChanged = false;
       for (const room of rooms) {
@@ -767,6 +886,16 @@ async function handleApi(req, res, url) {
     person.device = deviceLabel(req.headers['user-agent']);
     person.lastSeenAt = now;
     onlinePeople.set(id, person);
+    if (!existing) {
+      logActivity({
+        nickname: person.nickname,
+        accountId: account ? account.id : null,
+        kind: 'visite',
+        text: `a rejoint le site (${person.device})`,
+        dedupeKey: `visite:${id}`,
+        dedupeMs: 600000,
+      });
+    }
 
     // Le son en attente est remis une seule fois, puis consommé.
     const buzz = person.buzz;
@@ -783,6 +912,45 @@ async function handleApi(req, res, url) {
       .sort((a, b) => b.lastSeenAt - a.lastSeenAt)
       .map(publicPresence);
     return sendJson(res, 200, { count: people.length, people, sounds: BUZZ_SOUNDS });
+  }
+
+  // Journal d'activité : les actions réelles des joueurs, jamais leurs frappes.
+  if (req.method === 'GET' && pathname === '/api/admin/activity') {
+    if (!activeAdminSessionKey(req.headers['x-admin-token'])) {
+      return sendJson(res, 401, { error: 'La session administrateur a expiré. Saisis à nouveau le code.' });
+    }
+    const limitValue = Number.parseInt(url.searchParams.get('limit'), 10);
+    const limit = Number.isInteger(limitValue) ? Math.min(200, Math.max(1, limitValue)) : 80;
+    const person = cleanText(url.searchParams.get('person'), 24);
+    const entries = activityLog
+      .filter((entry) => !person || entry.nickname === person)
+      .slice(0, limit);
+    const people = [...new Set(activityLog.map((entry) => entry.nickname))]
+      .sort((a, b) => a.localeCompare(b, 'fr-FR'));
+    return sendJson(res, 200, {
+      count: activityLog.length,
+      entries,
+      people,
+      kinds: ACTIVITY_KINDS,
+      maxEntries: MAX_ACTIVITY_ENTRIES,
+    });
+  }
+
+  if (req.method === 'DELETE' && pathname === '/api/admin/activity') {
+    if (!activeAdminSessionKey(req.headers['x-admin-token'])) {
+      req.resume();
+      return sendJson(res, 401, { error: 'La session administrateur a expiré. Saisis à nouveau le code.' });
+    }
+    activityLog = [];
+    activityDedupe.clear();
+    const entry = logActivity({
+      nickname: 'Organisateur',
+      kind: 'admin',
+      text: 'a vidé le journal d’activité',
+      dedupeKey: `vidage:${Date.now()}`,
+      dedupeMs: 0,
+    });
+    return sendJson(res, 200, { ok: true, count: activityLog.length, entries: entry ? [entry] : [] });
   }
 
   const buzzPath = pathname.match(/^\/api\/admin\/presence\/([^/]+)\/buzz$/);
@@ -803,6 +971,13 @@ async function handleApi(req, res, url) {
         target.buzz = { ...buzz };
         target.buzzCount = (Number(target.buzzCount) || 0) + 1;
       });
+      logActivity({
+        nickname: 'Organisateur',
+        kind: 'admin',
+        text: `a envoyé le son ${soundLabel(sound)} à tout le monde (${targets.length} personne${targets.length > 1 ? 's' : ''})`,
+        dedupeKey: `buzz-tous:${buzz.at}`,
+        dedupeMs: 0,
+      });
       return sendJson(res, 200, { ok: true, count: targets.length, sound });
     }
 
@@ -812,6 +987,13 @@ async function handleApi(req, res, url) {
     }
     person.buzz = buzz;
     person.buzzCount = (Number(person.buzzCount) || 0) + 1;
+    logActivity({
+      nickname: 'Organisateur',
+      kind: 'admin',
+      text: `a envoyé le son ${soundLabel(sound)} à « ${person.nickname} »`,
+      dedupeKey: `buzz:${person.id}:${sound}:${buzz.at}`,
+      dedupeMs: 0,
+    });
     return sendJson(res, 200, { ok: true, count: 1, nickname: person.nickname, sound });
   }
 
@@ -856,6 +1038,13 @@ async function handleApi(req, res, url) {
     const token = accountSessionToken(account, now);
     accounts.push(account);
     saveAccounts();
+    logActivity({
+      nickname: account.nickname,
+      accountId: account.id,
+      kind: 'compte',
+      text: 'a créé son compte',
+      dedupeKey: `compte:${account.id}`,
+    });
     return sendJson(res, 201, {
       account: publicAccount(account),
       token,
@@ -908,6 +1097,14 @@ async function handleApi(req, res, url) {
     account.lastLoginAt = now;
     const token = accountSessionToken(account, now);
     saveAccounts();
+    logActivity({
+      nickname: account.nickname,
+      accountId: account.id,
+      kind: 'compte',
+      text: 'a ouvert une session',
+      dedupeKey: `connexion:${account.id}`,
+      dedupeMs: 30000,
+    });
     return sendJson(res, 200, {
       account: publicAccount(account),
       token,
@@ -928,6 +1125,14 @@ async function handleApi(req, res, url) {
       const tokenHash = hashToken(token);
       account.sessions = account.sessions.filter((session) => !sameSecret(session.tokenHash, tokenHash));
       saveAccounts();
+      logActivity({
+        nickname: account.nickname,
+        accountId: account.id,
+        kind: 'compte',
+        text: 'a fermé sa session',
+        dedupeKey: `deconnexion:${account.id}`,
+        dedupeMs: 30000,
+      });
     }
     return sendJson(res, 200, { ok: true });
   }
@@ -1021,6 +1226,13 @@ async function handleApi(req, res, url) {
     };
     rooms.unshift(room);
     saveRooms();
+    logActivity({
+      nickname,
+      accountId: account ? account.id : null,
+      kind: 'salon',
+      text: `a créé la partie « ${title} » (${game.label})`,
+      dedupeKey: `creation:${room.id}`,
+    });
     return sendJson(res, 201, { room: publicRoom(room, playerToken), playerToken });
   }
 
@@ -1247,6 +1459,13 @@ async function handleApi(req, res, url) {
         room.hostPlayerId = newPlayer.id;
       }
       saveRooms();
+      logActivity({
+        nickname,
+        accountId: account ? account.id : null,
+        kind: 'salon',
+        text: `a rejoint le salon « ${room.title} »`,
+        dedupeKey: `entree:${room.id}:${newPlayer.id}`,
+      });
       return sendJson(res, 201, { room: publicRoom(room, newPlayerToken), playerToken: newPlayerToken });
     }
 
@@ -1279,6 +1498,13 @@ async function handleApi(req, res, url) {
       processRoomBots(room);
       recordRoomVictory(room);
       saveRooms();
+      logActivity({
+        nickname: host.nickname,
+        accountId: host.accountId || null,
+        kind: 'partie',
+        text: `a lancé la partie « ${room.title} » (${room.players.length} joueur${room.players.length > 1 ? 's' : ''})`,
+        dedupeKey: `lancement:${room.id}:${room.startedAt}`,
+      });
       return sendJson(res, 200, { room: publicRoom(room, playerToken) });
     }
 
@@ -1535,6 +1761,13 @@ async function handleApi(req, res, url) {
       }
       transferHostIfNeeded(room, player.id);
       saveRooms();
+      logActivity({
+        nickname: player.nickname,
+        accountId: player.accountId || null,
+        kind: 'salon',
+        text: `a quitté le salon « ${room.title} »`,
+        dedupeKey: `sortie:${room.id}:${player.id}`,
+      });
       return sendJson(res, 200, { ok: true });
     }
 
@@ -1545,6 +1778,13 @@ async function handleApi(req, res, url) {
       }
       rooms = rooms.filter((candidate) => candidate.id !== room.id);
       saveRooms();
+      logActivity({
+        nickname: player.nickname,
+        accountId: player.accountId || null,
+        kind: 'salon',
+        text: `a fermé le salon « ${room.title} »`,
+        dedupeKey: `fermeture:${room.id}`,
+      });
       return sendJson(res, 200, { ok: true });
     }
 

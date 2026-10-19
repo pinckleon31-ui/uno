@@ -533,6 +533,27 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .admin-buzz-button:disabled { opacity: .55; }
 .admin-buzz-button.is-mega { font-weight: 900; letter-spacing: .02em; box-shadow: 0 0 0 2px rgba(222,74,66,.18); }
 .admin-buzz-all { display: inline-flex; align-items: center; gap: 8px; margin-bottom: 11px; padding: 10px 16px; font-size: .84rem; font-weight: 900; }
+
+/* Journal d'activité : une note horodatée des vraies actions des joueurs. */
+.admin-activity-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 11px; }
+.admin-activity-filter-label { color: #6b687e; font-size: 9px; font-weight: 900; letter-spacing: .04em; text-transform: uppercase; }
+.admin-activity-filter { flex: 1 1 160px; min-width: 0; max-width: 240px; min-height: 34px; padding: 0 10px; font-size: 11px; }
+.admin-activity-list { display: grid; gap: 7px; max-height: 320px; overflow-y: auto; margin: 0; padding: 0; list-style: none; overscroll-behavior: contain; }
+.admin-activity-item { display: grid; grid-template-columns: 26px minmax(0, 1fr); align-items: start; gap: 9px; padding: 9px 11px; border: 1px solid #eceaf1; border-radius: 11px; background: #fff; }
+.admin-activity-icon { display: grid; place-items: center; width: 26px; height: 26px; border-radius: 8px; background: #f3f1fb; font-size: 13px; }
+.admin-activity-item[data-kind="victoire"] .admin-activity-icon { background: #fff6d9; }
+.admin-activity-item[data-kind="admin"] .admin-activity-icon { background: #ffe9e7; }
+.admin-activity-item[data-kind="partie"] .admin-activity-icon { background: #e8f4ff; }
+.admin-activity-body { display: grid; gap: 2px; min-width: 0; }
+.admin-activity-time { color: #8c8a9c; font-size: 8px; font-weight: 900; letter-spacing: .05em; text-transform: uppercase; }
+.admin-activity-text { color: #4b4860; font-size: 11px; line-height: 1.4; overflow-wrap: anywhere; }
+.admin-activity-text strong { color: #211f33; font-weight: 900; }
+.admin-activity-list .admin-empty-state { grid-column: 1 / -1; }
+@media (max-width: 640px) {
+  .admin-activity-filter { max-width: none; }
+  .admin-activity-toolbar .button { flex: 1 1 auto; justify-content: center; }
+  .admin-activity-list { max-height: 260px; }
+}
 .buzz-flash { position: fixed; inset: 0; z-index: 9999; pointer-events: none; background: rgba(228,70,60,.55); animation: buzz-flash .34s steps(1) infinite; }
 @keyframes buzz-flash { 0%, 49% { background: rgba(228,70,60,.55); } 50%, 100% { background: rgba(255,236,120,.5); } }
 @media (prefers-reduced-motion: reduce) { .buzz-flash { animation: none; background: rgba(228,70,60,.35); } }

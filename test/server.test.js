@@ -768,3 +768,133 @@ test('la présence en ligne se déclare, se liste côté admin et reçoit un son
   });
   assert.equal(missing.status, 404);
 });
+
+test('Le journal d’activité note les vraies actions sans jamais capter les frappes', async (t) => {
+  const { request, dataDir } = await launchServer(t);
+  const unlocked = await request('/api/creator/unlock', {
+    method: 'POST',
+    body: { code: TEST_CREATOR_CODE },
+  });
+  const adminLogin = await request('/api/admin/login', {
+    method: 'POST',
+    body: { code: TEST_CREATOR_CODE },
+  });
+  const adminHeaders = { 'X-Admin-Token': adminLogin.data.token };
+
+  // Sans session admin, le journal reste fermé.
+  assert.equal((await request('/api/admin/activity')).status, 401);
+  assert.equal((await request('/api/admin/activity', { method: 'DELETE' })).status, 401);
+
+  const lina = await request('/api/accounts/register', {
+    method: 'POST',
+    body: { nickname: 'Lina', password: 'mot-de-passe-secret' },
+  });
+  assert.equal(lina.status, 201);
+
+  // Présence : l'arrivée sur le site est notée une seule fois.
+  const presence = await request('/api/presence', {
+    method: 'POST',
+    headers: { 'X-Account-Token': lina.data.token },
+    body: { nickname: 'Lina', activity: 'Accueil' },
+  });
+  await request('/api/presence', {
+    method: 'POST',
+    headers: { 'X-Account-Token': lina.data.token },
+    body: { id: presence.data.id, activity: 'Accueil' },
+  });
+
+  // Création de salon et lancement d'une partie.
+  const created = await request('/api/rooms', {
+    method: 'POST',
+    headers: {
+      'X-Creator-Ticket': unlocked.data.ticket,
+      'X-Account-Token': lina.data.token,
+    },
+    body: { title: 'La partie du soir', game: 'morpion', maxPlayers: 2 },
+  });
+  assert.equal(created.status, 201);
+  // Morpion se joue à deux : on complète avec un bot de test.
+  const bots = await request(`/api/rooms/${created.data.room.id}/bots`, {
+    method: 'POST',
+    headers: { 'X-Player-Token': created.data.playerToken },
+    body: { count: 1 },
+  });
+  assert.equal(bots.status, 200);
+  const started = await request(`/api/rooms/${created.data.room.id}/start`, {
+    method: 'POST',
+    headers: { 'X-Player-Token': created.data.playerToken },
+  });
+  assert.equal(started.status, 200);
+
+  const journal = await request('/api/admin/activity?limit=100', { headers: adminHeaders });
+  assert.equal(journal.status, 200);
+  const texts = journal.data.entries.map((entry) => `${entry.nickname} ${entry.text}`);
+  assert.ok(texts.some((line) => line.includes('Lina a créé son compte')), 'création de compte');
+  assert.ok(texts.some((line) => line.includes('Lina a rejoint le site')), 'arrivée sur le site');
+  assert.ok(texts.some((line) => line.includes('a créé la partie « La partie du soir »')), 'création de salon');
+  assert.ok(texts.some((line) => line.includes('a lancé la partie « La partie du soir »')), 'lancement de partie');
+  assert.equal(
+    texts.filter((line) => line.includes('a rejoint le site')).length,
+    1,
+    'une seule arrivée malgré les signaux de présence répétés',
+  );
+
+  // Les gestes admin sont tracés eux aussi.
+  const buzz = await request(`/api/admin/presence/${presence.data.id}/buzz`, {
+    method: 'POST',
+    body: { sound: 'mega' },
+    headers: adminHeaders,
+  });
+  assert.equal(buzz.status, 200);
+  const afterBuzz = await request('/api/admin/activity', { headers: adminHeaders });
+  assert.ok(
+    afterBuzz.data.entries.some((entry) => entry.text.includes('a envoyé le son 📢 MÉGA à « Lina »')),
+    'envoi de son journalisé',
+  );
+  assert.ok(afterBuzz.data.people.includes('Lina'), 'le filtre par joueur est alimenté');
+
+  // Filtre par joueur.
+  const filtered = await request('/api/admin/activity?person=Lina', { headers: adminHeaders });
+  assert.ok(filtered.data.entries.length > 0);
+  assert.ok(filtered.data.entries.every((entry) => entry.nickname === 'Lina'));
+  assert.equal((await request('/api/admin/activity?person=Personne', { headers: adminHeaders })).data.entries.length, 0);
+
+  // Garantie de confidentialité : aucun secret ne doit traîner dans le journal,
+  // ni sur le disque, ni dans l'API.
+  const rawFile = fs.readFileSync(path.join(dataDir, 'activity.json'), 'utf8');
+  const serialized = JSON.stringify(afterBuzz.data);
+  for (const secret of ['mot-de-passe-secret', TEST_CREATOR_CODE, 'password']) {
+    assert.ok(!serialized.includes(secret), `le journal ne doit pas exposer « ${secret} »`);
+  }
+  assert.ok(!rawFile.includes('mot-de-passe-secret'), 'aucun mot de passe écrit sur le disque');
+  assert.ok(!JSON.stringify(journal.data).includes('mot-de-passe-secret'));
+
+  // Aucune entrée ne doit contenir de frappe clavier : uniquement des phrases
+  // construites par le serveur.
+  for (const entry of afterBuzz.data.entries) {
+    assert.equal(typeof entry.text, 'string');
+    assert.ok(entry.text.length > 0 && entry.text.length <= 160);
+    assert.ok(!entry.text.includes('\n'), 'pas de contenu multiligne brut');
+  }
+
+  // Vidage du journal.
+  const cleared = await request('/api/admin/activity', { method: 'DELETE', headers: adminHeaders });
+  assert.equal(cleared.status, 200);
+  assert.equal(cleared.data.count, 1, 'seule la ligne de vidage reste');
+  assert.match(cleared.data.entries[0].text, /a vidé le journal d’activité/);
+  assert.equal((await request('/api/admin/activity', { headers: adminHeaders })).data.entries.length, 1);
+});
+
+test('Le client ne capture aucune frappe clavier et ne transmet que des actions', () => {
+  const script = fs.readFileSync(path.join(__dirname, '..', 'public', 'app.js'), 'utf8');
+  const stylesheet = fs.readFileSync(path.join(__dirname, '..', 'public', 'styles.css'), 'utf8');
+
+  assert.ok(!/addEventListener\(\s*['"]keypress['"]/.test(script), 'aucun écouteur keypress global');
+  assert.ok(!/key(Code|down|press)[^\n]{0,80}api\(/i.test(script), 'aucune frappe envoyée au serveur');
+  assert.ok(!/navigator\.sendBeacon|XMLHttpRequest/.test(script), 'aucune remontée discrète de frappes');
+  assert.match(script, /data-admin-activity-list/, 'le panneau affiche le journal');
+  assert.match(script, /data-admin-activity-clear/, 'le journal peut être vidé');
+  assert.match(script, /Aucune touche de clavier n’est enregistrée/, 'la promesse est écrite dans l’interface');
+  assert.match(stylesheet, /\.admin-activity-item/);
+  assert.match(stylesheet, /\.admin-activity-list/);
+});
