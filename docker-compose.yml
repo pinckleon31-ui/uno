@@ -1,0 +1,17 @@
+# Hébergement auto-hébergé (VPS, NAS, Raspberry Pi…).
+#   CREATOR_CODE=ton-code docker compose up -d
+services:
+  recre-jeux:
+    build: .
+    container_name: recre-jeux
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      CREATOR_CODE: ${CREATOR_CODE:?Définis CREATOR_CODE avant de lancer docker compose}
+      DATA_DIR: /app/.data
+    volumes:
+      - recre-data:/app/.data
+
+volumes:
+  recre-data:

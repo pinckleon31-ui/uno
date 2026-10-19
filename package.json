@@ -1,0 +1,14 @@
+{
+  "name": "recre-jeux",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Salons de jeux partagés pour la récréation (VPS, Docker ou Vercel)",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test",
+    "dev": "node server.js"
+  },
+  "engines": {
+    "node": "22.x"
+  }
+}
