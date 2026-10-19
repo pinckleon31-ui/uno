@@ -121,7 +121,10 @@ test('API de bout en bout : code organisateur, lobby, confidentialité, bots et 
   assert.match(script.text, /data-solo-2048-move/);
   assert.match(script.text, /data-mines-row/);
   assert.match(script.text, /data-memory-card/);
-  assert.doesNotMatch(script.text, /\/api\/solo/, 'les jeux solo tournent côté navigateur, sans salon serveur');
+  // Les jeux solo tournent toujours entièrement dans le navigateur. Seuls les
+  // records sont envoyés au serveur, et uniquement quand un compte est connecté.
+  assert.doesNotMatch(script.text, /api\/rooms[^`]*solo/, 'aucun salon serveur pour le solo');
+  assert.match(script.text, /if \(!accountToken \|\| !Number\.isFinite\(score\)/, 'le record n’est envoyé que si un compte est connecté');
   assert.match(script.text, /data-solo-variant/);
   assert.match(script.text, /function soloBoardStyle/);
   assert.match(script.text, /grid-template-columns:repeat\(\$\{columns\}/, 'le nombre de colonnes est écrit en clair dans le style du plateau');
@@ -377,10 +380,15 @@ test('API de bout en bout : code organisateur, lobby, confidentialité, bots et 
   assert.equal(anonymousRoom.status, 200);
   assert.deepEqual(anonymousRoom.data.room.uno.myHand, [], 'les mains adverses sont privées');
   assert.equal(JSON.stringify(anonymousRoom.data).includes('tokenHash'), false);
-  assert.equal((await request(`/api/rooms/${roomId}/join`, {
+  const lateJoin = await request(`/api/rooms/${roomId}/join`, {
     method: 'POST',
     body: { nickname: 'En retard' },
-  })).status, 409, 'un nouveau joueur ne peut entrer après le départ');
+  });
+  assert.equal(lateJoin.status, 201, 'on peut entrer après le départ comme spectateur');
+  assert.equal(lateJoin.data.room.isSpectator, true, 'le retardataire est spectateur');
+  assert.equal(lateJoin.data.room.playerCount, 2, 'un spectateur n’occupe pas de place');
+  assert.equal(lateJoin.data.room.uno.isMyTurn, false, 'un spectateur ne joue pas');
+  assert.deepEqual(lateJoin.data.room.uno.myHand, [], 'un spectateur ne voit aucune main');
   assert.equal((await request(`/api/rooms/${roomId}/start`, {
     method: 'POST',
     headers: { 'X-Player-Token': guestToken },
@@ -1056,4 +1064,201 @@ test('Le suivi des clics n’envoie que des clés et ne lit jamais les champs de
   assert.match(stylesheet, /\.admin-note \{/);
   assert.match(stylesheet, /\.admin-note-item/);
   assert.match(stylesheet, /\.admin-note-list/);
+});
+
+test('Salons privés : visibles dans la liste et protégés par mot de passe', async (t) => {
+  const { request } = await launchServer(t);
+  const unlocked = await request('/api/creator/unlock', { method: 'POST', body: { code: TEST_CREATOR_CODE } });
+  const created = await request('/api/rooms', {
+    method: 'POST',
+    headers: { 'X-Creator-Ticket': unlocked.data.ticket },
+    body: { title: 'Salon secret', game: 'morpion', maxPlayers: 2, nickname: 'Hôte', password: 'cookie42' },
+  });
+  assert.equal(created.status, 201);
+  assert.equal(created.data.room.isPrivate, true);
+  const roomId = created.data.room.id;
+
+  const lobby = await request('/api/rooms');
+  const listed = lobby.data.rooms.find((room) => room.id === roomId);
+  assert.ok(listed, 'le salon privé reste visible dans la liste');
+  assert.equal(listed.isPrivate, true, 'il est signalé comme privé');
+
+  const noPassword = await request(`/api/rooms/${roomId}/join`, {
+    method: 'POST',
+    body: { nickname: 'Curieux' },
+  });
+  assert.equal(noPassword.status, 401);
+  assert.match(noPassword.data.error, /privé/i);
+
+  const wrong = await request(`/api/rooms/${roomId}/join`, {
+    method: 'POST',
+    body: { nickname: 'Curieux', password: 'mauvais' },
+  });
+  assert.equal(wrong.status, 403);
+
+  const good = await request(`/api/rooms/${roomId}/join`, {
+    method: 'POST',
+    body: { nickname: 'Ami', password: 'cookie42' },
+  });
+  assert.equal(good.status, 201);
+  assert.equal(good.data.room.playerCount, 2);
+
+  // Le mot de passe n'est jamais renvoyé au client.
+  assert.equal(JSON.stringify(good.data).includes('cookie42'), false);
+  assert.equal(JSON.stringify(lobby.data).includes('cookie42'), false);
+
+  // Le mot de passe n'apparaît jamais dans la liste publique.
+  assert.equal(JSON.stringify(lobby.data).includes('passwordHash'), false);
+});
+
+test('L’organisateur peut retirer un joueur de la manche en cours', async (t) => {
+  const { request } = await launchServer(t);
+  const unlocked = await request('/api/creator/unlock', { method: 'POST', body: { code: TEST_CREATOR_CODE } });
+  const created = await request('/api/rooms', {
+    method: 'POST',
+    headers: { 'X-Creator-Ticket': unlocked.data.ticket },
+    body: { title: 'Salon à expulsion', game: 'morpion', maxPlayers: 2, nickname: 'Hôte' },
+  });
+  const roomId = created.data.room.id;
+  const hostToken = created.data.playerToken;
+  const guest = await request(`/api/rooms/${roomId}/join`, { method: 'POST', body: { nickname: 'Invité' } });
+  const guestToken = guest.data.playerToken;
+  const guestId = guest.data.room.players.find((player) => player.nickname === 'Invité').id;
+
+  const forbidden = await request(`/api/rooms/${roomId}/players/${guestId}`, {
+    method: 'DELETE',
+    headers: { 'X-Player-Token': guestToken },
+  });
+  assert.equal(forbidden.status, 403, 'un joueur ne peut pas expulser les autres');
+
+  const kicked = await request(`/api/rooms/${roomId}/players/${guestId}`, {
+    method: 'DELETE',
+    headers: { 'X-Player-Token': hostToken },
+  });
+  assert.equal(kicked.status, 200);
+  assert.equal(kicked.data.removed.nickname, 'Invité');
+
+  const after = await request(`/api/rooms/${roomId}`, { headers: { 'X-Player-Token': hostToken } });
+  assert.equal(after.data.room.playerCount, 1);
+
+  const guestAccess = await request(`/api/rooms/${roomId}`, { headers: { 'X-Player-Token': guestToken } });
+  assert.equal(guestAccess.status, 200);
+  assert.equal(guestAccess.data.room.isCurrentPlayer, false, 'le jeton retiré ne donne plus accès au jeu');
+
+  const journal = await request('/api/admin/login', { method: 'POST', body: { code: TEST_CREATOR_CODE } });
+  const activity = await request('/api/admin/activity', { headers: { 'X-Admin-Token': journal.data.token } });
+  assert.ok(activity.data.entries.some((entry) => entry.text.includes('a été retiré de la partie')));
+});
+
+test('Records solo : classement en ligne, sens du classement et refus sans compte', async (t) => {
+  const { request } = await launchServer(t);
+  const nina = await request('/api/accounts/register', { method: 'POST', body: { nickname: 'Nina', password: '1234' } });
+  const theo = await request('/api/accounts/register', { method: 'POST', body: { nickname: 'Théo', password: '1234' } });
+
+  assert.equal((await request('/api/solo/records', { method: 'POST', body: { game: 'snake', variant: 'normal', score: 10 } })).status, 401);
+
+  const first = await request('/api/solo/records', {
+    method: 'POST',
+    headers: { 'X-Account-Token': nina.data.token },
+    body: { game: 'snake', variant: 'normal', score: 12 },
+  });
+  assert.equal(first.status, 200);
+  assert.equal(first.data.improved, true);
+  const worse = await request('/api/solo/records', {
+    method: 'POST',
+    headers: { 'X-Account-Token': nina.data.token },
+    body: { game: 'snake', variant: 'normal', score: 8 },
+  });
+  assert.equal(worse.data.improved, false, 'un score plus faible ne remplace pas le record');
+  assert.equal(worse.data.best, 12);
+
+  await request('/api/solo/records', {
+    method: 'POST',
+    headers: { 'X-Account-Token': theo.data.token },
+    body: { game: 'snake', variant: 'normal', score: 30 },
+  });
+
+  const leaderboard = await request('/api/solo/leaderboard?game=snake&variant=normal');
+  assert.equal(leaderboard.status, 200);
+  assert.deepEqual(leaderboard.data.players.map((player) => player.nickname), ['Théo', 'Nina']);
+  assert.equal(leaderboard.data.lowerIsBetter, false);
+
+  // Au démineur, le plus petit temps gagne.
+  await request('/api/solo/records', {
+    method: 'POST',
+    headers: { 'X-Account-Token': nina.data.token },
+    body: { game: 'demineur', variant: 'facile', score: 40 },
+  });
+  await request('/api/solo/records', {
+    method: 'POST',
+    headers: { 'X-Account-Token': theo.data.token },
+    body: { game: 'demineur', variant: 'facile', score: 18 },
+  });
+  const mines = await request('/api/solo/leaderboard?game=demineur&variant=facile');
+  assert.deepEqual(mines.data.players.map((player) => player.nickname), ['Théo', 'Nina']);
+  assert.equal(mines.data.lowerIsBetter, true);
+  assert.equal(mines.data.unit, 'secondes');
+
+  assert.equal((await request('/api/solo/leaderboard?game=inconnu&variant=x')).status, 400);
+  assert.equal((await request('/api/solo/records', {
+    method: 'POST',
+    headers: { 'X-Account-Token': nina.data.token },
+    body: { game: 'snake', variant: 'normal', score: -5 },
+  })).status, 400);
+});
+
+test('Un joueur peut supprimer son compte avec son mot de passe', async (t) => {
+  const { request } = await launchServer(t);
+  const account = await request('/api/accounts/register', { method: 'POST', body: { nickname: 'Camille', password: 'secret42' } });
+  const headers = { 'X-Account-Token': account.data.token };
+
+  assert.equal((await request('/api/accounts/me', { method: 'DELETE', headers, body: { password: 'faux' } })).status, 403);
+  const stillThere = await request('/api/accounts/me', { headers });
+  assert.equal(stillThere.status, 200, 'un mauvais mot de passe ne supprime rien');
+
+  const deleted = await request('/api/accounts/me', { method: 'DELETE', headers, body: { password: 'secret42' } });
+  assert.equal(deleted.status, 200);
+  assert.equal((await request('/api/accounts/me', { headers })).status, 401, 'la session ne vaut plus rien');
+  assert.equal((await request('/api/accounts/login', { method: 'POST', body: { nickname: 'Camille', password: 'secret42' } })).status, 401);
+  assert.equal((await request('/api/leaderboard')).data.players.some((player) => player.nickname === 'Camille'), false);
+});
+
+test('Export complet et fermeture de tous les salons depuis l’administration', async (t) => {
+  const { request } = await launchServer(t);
+  const unlocked = await request('/api/creator/unlock', { method: 'POST', body: { code: TEST_CREATOR_CODE } });
+  const admin = await request('/api/admin/login', { method: 'POST', body: { code: TEST_CREATOR_CODE } });
+  const adminHeaders = { 'X-Admin-Token': admin.data.token };
+
+  await request('/api/accounts/register', { method: 'POST', body: { nickname: 'Léa', password: 'motdepasse1' } });
+  const room = await request('/api/rooms', {
+    method: 'POST',
+    headers: { 'X-Creator-Ticket': unlocked.data.ticket },
+    body: { title: 'Salon à fermer', game: 'morpion', maxPlayers: 2, nickname: 'Hôte' },
+  });
+  assert.equal(room.status, 201);
+
+  assert.equal((await request('/api/admin/export')).status, 401);
+  const exported = await request('/api/admin/export?format=json', { headers: adminHeaders });
+  assert.equal(exported.status, 200);
+  const payload = JSON.parse(exported.text);
+  assert.ok(Array.isArray(payload.accounts) && payload.accounts.length >= 1);
+  assert.ok(Array.isArray(payload.activity));
+  assert.ok(Array.isArray(payload.history));
+  assert.ok(payload.exportedAt);
+  // Aucune donnée sensible ne doit sortir.
+  for (const secret of ['motdepasse1', 'passwordHash', 'passwordSalt', TEST_CREATOR_CODE]) {
+    assert.equal(exported.text.includes(secret), false, `l’export ne doit pas contenir « ${secret} »`);
+  }
+
+  const csv = await request('/api/admin/export?format=csv', { headers: adminHeaders });
+  assert.equal(csv.status, 200);
+  assert.match(csv.response.headers.get('content-type') || '', /text\/csv/);
+  assert.match(csv.text, /pseudo,victoires/);
+  assert.match(csv.text, /Léa/);
+
+  assert.equal((await request('/api/admin/rooms', { method: 'DELETE' })).status, 401);
+  const closed = await request('/api/admin/rooms', { method: 'DELETE', headers: adminHeaders });
+  assert.equal(closed.status, 200);
+  assert.equal(closed.data.count, 1);
+  assert.equal((await request('/api/rooms')).data.rooms.length, 0);
 });

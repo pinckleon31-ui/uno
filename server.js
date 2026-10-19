@@ -11,6 +11,7 @@ const quizEngine = require('./quiz');
 const blindTestEngine = require('./blind_melody');
 const morpionEngine = require('./morpion');
 const memoireEngine = require('./memoire');
+const batailleNavaleEngine = require('./bataille-navale');
 
 const PORT = Number.parseInt(process.env.PORT || '3000', 10);
 const HOST = '0.0.0.0';
@@ -19,6 +20,7 @@ const DATA_DIR = path.resolve(process.env.DATA_DIR || path.join(__dirname, '.dat
 const DATA_FILE = path.join(DATA_DIR, 'rooms.json');
 const ACCOUNTS_FILE = path.join(DATA_DIR, 'accounts.json');
 const ACTIVITY_FILE = path.join(DATA_DIR, 'activity.json');
+const HISTORY_FILE = path.join(DATA_DIR, 'history.json');
 const CREATOR_CODE = String(process.env.CREATOR_CODE || '').trim();
 const PRESENCE_TTL = 2 * 60 * 1000;
 const ACCOUNT_SESSION_TTL = 30 * 24 * 60 * 60 * 1000;
@@ -51,6 +53,7 @@ function soundLabel(sound) {
 // gestes admin). Il ne contient JAMAIS de frappe au clavier, de mot de passe,
 // ni le code organisateur.
 const MAX_ACTIVITY_ENTRIES = 600;
+const MAX_HISTORY_ENTRIES = 500;
 const ACTIVITY_KINDS = Object.freeze(['visite', 'compte', 'salon', 'partie', 'victoire', 'admin', 'clic', 'touche', 'tchat']);
 
 // Liste blanche des boutons suivis. Le navigateur n'envoie qu'une CLÉ courte :
@@ -121,6 +124,7 @@ const GAMES = Object.freeze({
   'blind-test': { label: 'Blind test', minPlayers: 2, maxPlayers: 12 },
   morpion: { label: 'Morpion', minPlayers: 2, maxPlayers: 2 },
   memoire: { label: 'Memory', minPlayers: 2, maxPlayers: 4 },
+  'bataille-navale': { label: 'Bataille navale', minPlayers: 2, maxPlayers: 2 },
 });
 const BOT_NAMES = ['Mila', 'Noé', 'Lou', 'Sam', 'Zoé', 'Tom', 'Inès', 'Eden', 'Milo', 'Jade'];
 const CHAT_MAX_MESSAGES = 80;
@@ -136,6 +140,7 @@ const creatorTickets = new Map();
 const adminSessions = new Map();
 const onlinePeople = new Map();
 let activityLog = loadActivity();
+let gameHistory = loadHistory();
 const activityDedupe = new Map();
 const failedCodes = new Map();
 const failedAccountLogins = new Map();
@@ -181,6 +186,7 @@ function loadAccounts() {
         wins: Number.isInteger(account.wins) && account.wins > 0 ? account.wins : 0,
         isAdmin: account.isAdmin === true,
         isCheater: account.isCheater === true,
+        soloRecords: account.soloRecords && typeof account.soloRecords === 'object' ? account.soloRecords : {},
         sessions: Array.isArray(account.sessions) ? account.sessions : [],
       }));
   } catch (error) {
@@ -196,6 +202,29 @@ function saveAccounts() {
   fs.writeFileSync(ACCOUNTS_FILE, JSON.stringify({ accounts }, null, 2), { mode: 0o600 });
   try {
     fs.chmodSync(ACCOUNTS_FILE, 0o600);
+  } catch {
+    // Les permissions POSIX ne sont pas disponibles sur tous les systèmes.
+  }
+}
+
+function loadHistory() {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(HISTORY_FILE, 'utf8'));
+    if (!parsed || !Array.isArray(parsed.games)) return [];
+    return parsed.games.filter((game) => game && typeof game.roomId === 'string').slice(0, MAX_HISTORY_ENTRIES);
+  } catch (error) {
+    if (error.code !== 'ENOENT') {
+      console.error('Impossible de lire l’historique des parties :', error.message);
+    }
+    return [];
+  }
+}
+
+function saveHistory() {
+  fs.mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
+  fs.writeFileSync(HISTORY_FILE, JSON.stringify({ games: gameHistory }, null, 2), { mode: 0o600 });
+  try {
+    fs.chmodSync(HISTORY_FILE, 0o600);
   } catch {
     // Les permissions POSIX ne sont pas disponibles sur tous les systèmes.
   }
@@ -271,6 +300,11 @@ function sameSecret(left, right) {
   return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
 
+// Les spectateurs assistent à la partie sans occuper de place ni jouer.
+function activePlayers(room) {
+  return room.players.filter((player) => !player.isSpectator);
+}
+
 function findParticipant(room, token) {
   if (!token || typeof token !== 'string') return null;
   const candidateHash = hashToken(token);
@@ -321,6 +355,7 @@ function publicAccount(account) {
     wins: Number(account.wins) || 0,
     isAdmin: account.isAdmin === true,
     isCheater: account.isCheater === true,
+    soloRecords: account.soloRecords && typeof account.soloRecords === 'object' ? account.soloRecords : {},
   };
 }
 
@@ -332,6 +367,7 @@ function roomEngine(room) {
   if (room.game === 'blind-test') return blindTestEngine;
   if (room.game === 'morpion') return morpionEngine;
   if (room.game === 'memoire') return memoireEngine;
+  if (room.game === 'bataille-navale') return batailleNavaleEngine;
   return null;
 }
 
@@ -412,6 +448,18 @@ function recordRoomVictory(room) {
     }
   }
   if (accountsChanged) saveAccounts();
+  const winners = winnerIds.map((winnerId) => room.players.find((player) => player.id === winnerId)?.nickname).filter(Boolean);
+  gameHistory.unshift({
+    roomId: room.id,
+    title: room.title,
+    game: room.game,
+    playerNames: room.players.filter((player) => !player.isSpectator).map((player) => player.nickname),
+    winnerNames: winners,
+    startedAt: Number(state.startedAt) || null,
+    finishedAt: Date.now(),
+  });
+  if (gameHistory.length > MAX_HISTORY_ENTRIES) gameHistory.length = MAX_HISTORY_ENTRIES;
+  saveHistory();
   return true;
 }
 
@@ -440,6 +488,7 @@ function publicRoom(room, token = '') {
     isBot: Boolean(player.isBot),
     isHost: player.id === room.hostPlayerId,
     isCurrentPlayer: Boolean(currentPlayer && player.id === currentPlayer.id),
+    isSpectator: Boolean(player.isSpectator),
     ...playerChatStyle(player.id),
   }));
   const host = room.players.find((player) => player.id === room.hostPlayerId);
@@ -456,6 +505,9 @@ function publicRoom(room, token = '') {
   const blindTest = room.game === 'blind-test' ? decorateGameState(room, blindTestEngine.publicState(room, currentPlayer)) : null;
   const morpion = room.game === 'morpion' ? decorateGameState(room, morpionEngine.publicState(room, currentPlayer)) : null;
   const memoire = room.game === 'memoire' ? decorateGameState(room, memoireEngine.publicState(room, currentPlayer)) : null;
+  const batailleNavale = room.game === 'bataille-navale'
+    ? decorateGameState(room, batailleNavaleEngine.publicState(room, currentPlayer))
+    : null;
 
   return {
     id: room.id,
@@ -466,10 +518,13 @@ function publicRoom(room, token = '') {
     minPlayersToStart: GAMES[room.game]?.minPlayers || 1,
     createdAt: room.createdAt,
     maxPlayers: room.maxPlayers,
-    playerCount: players.length,
-    isFull: players.length >= room.maxPlayers,
+    playerCount: activePlayers(room).length,
+    spectatorCount: players.length - activePlayers(room).length,
+    isPrivate: Boolean(room.passwordHash),
+    isFull: activePlayers(room).length >= room.maxPlayers,
     hostName: host ? host.nickname : 'Organisateur',
     isCurrentPlayer: Boolean(currentPlayer),
+    isSpectator: Boolean(currentPlayer && currentPlayer.isSpectator),
     isHost: Boolean(currentPlayer && currentPlayer.id === room.hostPlayerId),
     isCheater: Boolean(currentAccount && currentAccount.isCheater),
     currentPlayerId: currentPlayer ? currentPlayer.id : null,
@@ -482,6 +537,7 @@ function publicRoom(room, token = '') {
     blindTest,
     morpion,
     memoire,
+    batailleNavale,
   };
 }
 
@@ -976,6 +1032,72 @@ async function handleApi(req, res, url) {
     return sendJson(res, 200, { id, buzz: buzz || null });
   }
 
+  // L'organisateur peut fermer tous les salons d'un coup après une récréation.
+  if (req.method === 'DELETE' && pathname === '/api/admin/rooms') {
+    if (!activeAdminSessionKey(req.headers['x-admin-token'])) {
+      req.resume();
+      return sendJson(res, 401, { error: 'La session administrateur a expiré. Saisis à nouveau le code.' });
+    }
+    cleanRooms();
+    const count = rooms.length;
+    rooms = [];
+    saveRooms();
+    logActivity({
+      nickname: 'Organisateur',
+      kind: 'admin',
+      text: `a fermé tous les salons (${count})`,
+      dedupeKey: `fermeture-totale:${Date.now()}`,
+      dedupeMs: 0,
+    });
+    return sendJson(res, 200, { ok: true, count });
+  }
+
+  // Export complet demandé par l'organisateur : comptes (sans mots de passe),
+  // journal d'activité et historique des parties.
+  if (req.method === 'GET' && pathname === '/api/admin/export') {
+    if (!activeAdminSessionKey(req.headers['x-admin-token'])) {
+      return sendJson(res, 401, { error: 'La session administrateur a expiré. Saisis à nouveau le code.' });
+    }
+    const format = String(url.searchParams.get('format') || 'json').toLowerCase();
+    const exportedAt = new Date().toISOString();
+    const safeAccounts = accounts.map((account) => ({
+      id: account.id,
+      nickname: account.nickname,
+      wins: Number(account.wins) || 0,
+      isAdmin: account.isAdmin === true,
+      isCheater: account.isCheater === true,
+      soloRecords: account.soloRecords || {},
+      createdAt: Number(account.createdAt) || 0,
+      lastLoginAt: Number(account.lastLoginAt) || 0,
+    }));
+    if (format === 'csv') {
+      const header = 'pseudo,victoires,admin,tricheur,cree_le,derniere_connexion';
+      const lines = safeAccounts.map((account) => [
+        `"${account.nickname.replace(/"/g, '""')}"`,
+        account.wins,
+        account.isAdmin ? 'oui' : 'non',
+        account.isCheater ? 'oui' : 'non',
+        account.createdAt ? new Date(account.createdAt).toISOString() : '',
+        account.lastLoginAt ? new Date(account.lastLoginAt).toISOString() : '',
+      ].join(','));
+      res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+      res.setHeader('Content-Disposition', 'attachment; filename="recre-jeux-comptes.csv"');
+      res.writeHead(200);
+      res.end([header, ...lines].join('\r\n'));
+      return true;
+    }
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename="recre-jeux-export.json"');
+    res.writeHead(200);
+    res.end(JSON.stringify({
+      exportedAt,
+      accounts: safeAccounts,
+      activity: activityLog,
+      history: gameHistory,
+    }, null, 2));
+    return true;
+  }
+
   // Le navigateur signale un bouton précis (clé de la liste blanche).
   if (req.method === 'POST' && pathname === '/api/presence/action') {
     const body = await readJson(req);
@@ -1125,6 +1247,7 @@ async function handleApi(req, res, url) {
       wins: 0,
       isAdmin: false,
       isCheater: false,
+      soloRecords: {},
       sessions: [],
     };
     const token = accountSessionToken(account, now);
@@ -1210,6 +1333,51 @@ async function handleApi(req, res, url) {
     return sendJson(res, 200, { account: publicAccount(account) });
   }
 
+  // Le joueur peut supprimer lui-même son compte : le mot de passe est exigé
+  // pour éviter qu'une session volée suffise.
+  if (req.method === 'DELETE' && pathname === '/api/accounts/me') {
+    const token = req.headers['x-account-token'];
+    const account = findAccountByToken(token);
+    if (!account) {
+      req.resume();
+      return sendJson(res, 401, { error: 'Ta session a expiré. Connecte-toi à nouveau.' });
+    }
+    const body = await readJson(req);
+    const password = typeof body.password === 'string' ? body.password : '';
+    if (!password) return sendJson(res, 400, { error: 'Saisis ton mot de passe pour confirmer.' });
+    const passwordHash = await derivePasswordHash(password, account.passwordSalt);
+    const expected = Buffer.from(account.passwordHash, 'base64url');
+    if (expected.length !== passwordHash.length || !crypto.timingSafeEqual(expected, passwordHash)) {
+      return sendJson(res, 403, { error: 'Mot de passe incorrect : le compte n’a pas été supprimé.' });
+    }
+    const index = accounts.findIndex((candidate) => candidate.id === account.id);
+    if (index >= 0) accounts.splice(index, 1);
+    saveAccounts();
+    let roomsChanged = false;
+    for (const room of rooms) {
+      const before = room.players.length;
+      room.players = room.players.filter((player) => player.accountId !== account.id);
+      if (room.players.length !== before) {
+        roomsChanged = true;
+        if (room.gameState) {
+          syncRoomPlayers(room);
+          processRoomBots(room);
+          recordRoomVictory(room);
+        }
+        transferHostIfNeeded(room, null);
+      }
+    }
+    if (roomsChanged) saveRooms();
+    logActivity({
+      nickname: account.nickname,
+      kind: 'compte',
+      text: 'a supprimé son compte',
+      dedupeKey: `suppression-perso:${account.id}`,
+      dedupeMs: 0,
+    });
+    return sendJson(res, 200, { ok: true });
+  }
+
   if (req.method === 'POST' && pathname === '/api/accounts/logout') {
     const token = req.headers['x-account-token'];
     const account = findAccountByToken(token);
@@ -1227,6 +1395,62 @@ async function handleApi(req, res, url) {
       });
     }
     return sendJson(res, 200, { ok: true });
+  }
+
+  // Records des jeux solo : chaque compte garde son meilleur score par jeu et
+  // par variante. Le classement est public, sans jamais exposer de données privées.
+  const SOLO_GAMES = ['snake', '2048', 'demineur', 'memory'];
+  // Certains jeux se jouent au temps ou au nombre de coups : le plus petit gagne.
+  const SOLO_LOWER_IS_BETTER = { demineur: true, memory: true };
+  const SOLO_UNITS = { snake: 'points', '2048': 'points', demineur: 'secondes', memory: 'coups' };
+
+  if (req.method === 'GET' && pathname === '/api/solo/leaderboard') {
+    const game = String(url.searchParams.get('game') || '');
+    const variant = cleanText(url.searchParams.get('variant'), 24);
+    if (!SOLO_GAMES.includes(game)) return sendJson(res, 400, { error: 'Choisis un jeu solo valide.' });
+    const rows = [];
+    for (const account of accounts) {
+      const records = account.soloRecords || {};
+      const score = Number(records[`${game}:${variant}`]);
+      if (!Number.isFinite(score) || score <= 0) continue;
+      rows.push({ nickname: account.nickname, score });
+    }
+    const lowerIsBetter = SOLO_LOWER_IS_BETTER[game] === true;
+    rows.sort((a, b) => (lowerIsBetter ? a.score - b.score : b.score - a.score)
+      || a.nickname.localeCompare(b.nickname, 'fr-FR'));
+    return sendJson(res, 200, {
+      game,
+      variant,
+      unit: SOLO_UNITS[game] || 'points',
+      lowerIsBetter,
+      players: rows.slice(0, 10),
+    });
+  }
+
+  if (req.method === 'POST' && pathname === '/api/solo/records') {
+    const account = findAccountByToken(req.headers['x-account-token']);
+    if (!account) {
+      req.resume();
+      return sendJson(res, 401, { error: 'Connecte-toi pour enregistrer tes records.' });
+    }
+    const body = await readJson(req);
+    const game = String(body.game || '');
+    const variant = cleanText(body.variant, 24);
+    const score = Number(body.score);
+    if (!SOLO_GAMES.includes(game)) return sendJson(res, 400, { error: 'Choisis un jeu solo valide.' });
+    if (!variant) return sendJson(res, 400, { error: 'Indique la variante jouée.' });
+    if (!Number.isInteger(score) || score < 0 || score > 10_000_000) {
+      return sendJson(res, 400, { error: 'Score invalide.' });
+    }
+    if (!account.soloRecords || typeof account.soloRecords !== 'object') account.soloRecords = {};
+    const recordKey = `${game}:${variant}`;
+    const previous = Number(account.soloRecords[recordKey]) || 0;
+    const improved = score > previous;
+    if (improved) {
+      account.soloRecords[recordKey] = score;
+      saveAccounts();
+    }
+    return sendJson(res, 200, { ok: true, improved, best: Math.max(previous, score), previous });
   }
 
   if (req.method === 'GET' && pathname === '/api/leaderboard') {
@@ -1283,6 +1507,10 @@ async function handleApi(req, res, url) {
     const title = cleanText(body.title, 32);
     const nickname = account ? account.nickname : cleanText(body.nickname, 18);
     const maxPlayers = Number.parseInt(body.maxPlayers, 10);
+    const roomPassword = typeof body.password === 'string' ? body.password.trim() : '';
+    if (roomPassword && (Array.from(roomPassword).length < 2 || Array.from(roomPassword).length > 32)) {
+      return sendJson(res, 400, { error: 'Le mot de passe du salon doit faire entre 2 et 32 caractères.' });
+    }
     if (!title) return sendJson(res, 400, { error: 'Donne un nom à ta partie.' });
     if (!nickname) return sendJson(res, 400, { error: 'Choisis un pseudo pour rejoindre le salon.' });
     if (!Number.isInteger(maxPlayers) || maxPlayers < game.minPlayers || maxPlayers > game.maxPlayers) {
@@ -1294,8 +1522,9 @@ async function handleApi(req, res, url) {
     const now = Date.now();
     const playerToken = createToken();
     const hostId = crypto.randomUUID();
+    const roomId = crypto.randomUUID();
     const room = {
-      id: crypto.randomUUID(),
+      id: roomId,
       title,
       game: body.game,
       createdAt: now,
@@ -1306,6 +1535,7 @@ async function handleApi(req, res, url) {
       chatMessages: [],
       wolfChatMessages: [],
       hostPlayerId: hostId,
+      passwordHash: roomPassword ? hashToken(`salon:${roomId}:${roomPassword}`) : null,
       players: [{
         id: hostId,
         nickname,
@@ -1539,10 +1769,19 @@ async function handleApi(req, res, url) {
         return sendJson(res, 200, { room: publicRoom(room, playerToken), playerToken });
       }
 
-      if (room.status === 'started') {
-        return sendJson(res, 409, { error: 'Cette partie a déjà commencé. Les nouveaux joueurs ne peuvent plus entrer.' });
+      // Salon privé : le mot de passe est vérifié côté serveur, jamais envoyé au client.
+      if (room.passwordHash) {
+        const submitted = typeof body.password === 'string' ? body.password.trim() : '';
+        if (!submitted) {
+          return sendJson(res, 401, { error: 'Ce salon est privé : demande le mot de passe à l’organisateur.' });
+        }
+        if (!sameSecret(hashToken(`salon:${room.id}:${submitted}`), room.passwordHash)) {
+          return sendJson(res, 403, { error: 'Mot de passe du salon incorrect.' });
+        }
       }
-      if (room.players.length >= room.maxPlayers) {
+      // Partie déjà lancée : on entre comme spectateur, sans occuper de place.
+      const asSpectator = room.status === 'started';
+      if (!asSpectator && activePlayers(room).length >= room.maxPlayers) {
         return sendJson(res, 409, { error: 'Cette partie est complète. Choisis un autre salon.' });
       }
       const nickname = account ? account.nickname : cleanText(body.nickname, 18);
@@ -1555,6 +1794,7 @@ async function handleApi(req, res, url) {
         nickname,
         accountId: account ? account.id : null,
         isBot: false,
+        isSpectator: asSpectator,
         tokenHash: hashToken(newPlayerToken),
         joinedAt: now,
         lastSeenAt: now,
@@ -1568,7 +1808,9 @@ async function handleApi(req, res, url) {
         nickname,
         accountId: account ? account.id : null,
         kind: 'salon',
-        text: `a rejoint le salon « ${room.title} »`,
+        text: asSpectator
+          ? `regarde la partie « ${room.title} »`
+          : `a rejoint le salon « ${room.title} »`,
         dedupeKey: `entree:${room.id}:${newPlayer.id}`,
       });
       return sendJson(res, 201, { room: publicRoom(room, newPlayerToken), playerToken: newPlayerToken });
@@ -1591,13 +1833,13 @@ async function handleApi(req, res, url) {
       }
       const game = GAMES[room.game];
       const minimum = game ? game.minPlayers : 1;
-      if (room.players.length < minimum) {
+      if (activePlayers(room).length < minimum) {
         req.resume();
         return sendJson(res, 400, { error: `Il faut au moins ${minimum} joueurs pour lancer cette partie. Tu peux ajouter des bots de test.` });
       }
       await readJson(req);
       room.status = 'started';
-      room.gameState = engine.createGame(room.players);
+      room.gameState = engine.createGame(activePlayers(room));
       room.startedAt = room.gameState.startedAt;
       room.startedBy = host.id;
       processRoomBots(room);
@@ -1607,7 +1849,7 @@ async function handleApi(req, res, url) {
         nickname: host.nickname,
         accountId: host.accountId || null,
         kind: 'partie',
-        text: `a lancé la partie « ${room.title} » (${room.players.length} joueur${room.players.length > 1 ? 's' : ''})`,
+        text: `a lancé la partie « ${room.title} » (${activePlayers(room).length} joueur${activePlayers(room).length > 1 ? 's' : ''})`,
         dedupeKey: `lancement:${room.id}:${room.startedAt}`,
       });
       return sendJson(res, 200, { room: publicRoom(room, playerToken) });
@@ -1638,7 +1880,7 @@ async function handleApi(req, res, url) {
           return sendJson(res, 400, { error: 'Il faut au moins deux joueurs pour rejouer.' });
         }
         await readJson(req);
-        room.gameState = unoEngine.createGame(room.players);
+        room.gameState = unoEngine.createGame(activePlayers(room));
         room.startedAt = room.gameState.startedAt;
         processRoomBots(room);
         recordRoomVictory(room);
@@ -1692,7 +1934,7 @@ async function handleApi(req, res, url) {
           return sendJson(res, 400, { error: 'Il faut deux joueurs pour rejouer à Puissance 4.' });
         }
         await readJson(req);
-        room.gameState = puissance4Engine.createGame(room.players);
+        room.gameState = puissance4Engine.createGame(activePlayers(room));
         room.startedAt = room.gameState.startedAt;
         processRoomBots(room);
         recordRoomVictory(room);
@@ -1716,7 +1958,25 @@ async function handleApi(req, res, url) {
       return sendJson(res, 200, { room: publicRoom(room, playerToken) });
     }
 
-    if (req.method === 'POST' && ['loup-garou/restart', 'quiz/restart', 'blind-test/restart', 'morpion/restart', 'memoire/restart'].includes(action)) {
+    if (req.method === 'POST' && action === 'bataille-navale/fire') {
+      const player = findParticipant(room, playerToken);
+      if (!player || player.isBot) {
+        req.resume();
+        return sendJson(res, 401, { error: 'Rejoins cette partie avec ton pseudo pour tirer.' });
+      }
+      if (room.game !== 'bataille-navale') {
+        req.resume();
+        return sendJson(res, 409, { error: 'Ces actions sont disponibles pour la Bataille navale uniquement.' });
+      }
+      const body = await readJson(req);
+      batailleNavaleEngine.fire(room, player, body.row, body.column);
+      processRoomBots(room);
+      recordRoomVictory(room);
+      saveRooms();
+      return sendJson(res, 200, { room: publicRoom(room, playerToken) });
+    }
+
+    if (req.method === 'POST' && ['loup-garou/restart', 'quiz/restart', 'blind-test/restart', 'morpion/restart', 'memoire/restart', 'bataille-navale/restart'].includes(action)) {
       const player = findParticipant(room, playerToken);
       if (!player || player.isBot) {
         req.resume();
@@ -1736,12 +1996,13 @@ async function handleApi(req, res, url) {
         return sendJson(res, 409, { error: 'La partie doit se terminer avant de rejouer.' });
       }
       const minimum = GAMES[room.game]?.minPlayers || 2;
-      if (room.players.length < minimum) {
+      if (activePlayers(room).length < minimum) {
         req.resume();
         return sendJson(res, 400, { error: `Il faut au moins ${minimum} joueurs pour rejouer.` });
       }
       await readJson(req);
-      room.gameState = engine.createGame(room.players);
+      room.gameState = engine.createGame(activePlayers(room));
+      room.players.forEach((player) => { if (player.isSpectator) player.isSpectator = true; });
       if (room.game === 'loup-garou') room.wolfChatMessages = [];
       room.startedAt = room.gameState.startedAt;
       processRoomBots(room);
@@ -1799,7 +2060,7 @@ async function handleApi(req, res, url) {
 
       const body = await readJson(req);
       const requestedCount = Number(body.count);
-      const availableSeats = Math.max(0, room.maxPlayers - room.players.length);
+      const availableSeats = Math.max(0, room.maxPlayers - activePlayers(room).length);
       if (!Number.isInteger(requestedCount) || requestedCount < 1) {
         return sendJson(res, 400, { error: 'Choisis au moins un bot à ajouter.' });
       }
@@ -1853,6 +2114,50 @@ async function handleApi(req, res, url) {
       player.lastSeenAt = Date.now();
       saveRooms();
       return sendJson(res, 200, { room: publicRoom(room, playerToken) });
+    }
+
+    // L'organisateur retire un joueur de la manche en cours. Il n'est pas
+    // banni : il pourra revenir dans un prochain salon ouvert.
+    const kickPath = action.match(/^players\/([^/]+)$/);
+    // « players/me » reste le départ volontaire du joueur, traité plus bas.
+    if (req.method === 'DELETE' && kickPath && kickPath[1] !== 'me') {
+      const host = findParticipant(room, playerToken);
+      if (!host || host.id !== room.hostPlayerId) {
+        req.resume();
+        return sendJson(res, 403, { error: 'Seul l’organisateur peut retirer un joueur.' });
+      }
+      let targetId;
+      try {
+        targetId = decodeURIComponent(kickPath[1]);
+      } catch {
+        req.resume();
+        return sendJson(res, 400, { error: 'Identifiant de joueur invalide.' });
+      }
+      const target = room.players.find((candidate) => candidate.id === targetId);
+      if (!target) {
+        req.resume();
+        return sendJson(res, 404, { error: 'Ce joueur n’est plus dans le salon.' });
+      }
+      if (target.id === room.hostPlayerId) {
+        req.resume();
+        return sendJson(res, 400, { error: 'L’organisateur ne peut pas se retirer lui-même.' });
+      }
+      room.players = room.players.filter((candidate) => candidate.id !== target.id);
+      if (room.gameState) {
+        syncRoomPlayers(room);
+        processRoomBots(room);
+        recordRoomVictory(room);
+      }
+      saveRooms();
+      logActivity({
+        nickname: target.nickname,
+        accountId: target.accountId || null,
+        kind: 'salon',
+        text: `a été retiré de la partie « ${room.title} » par l’organisateur`,
+        dedupeKey: `expulsion:${room.id}:${target.id}:${Date.now()}`,
+        dedupeMs: 0,
+      });
+      return sendJson(res, 200, { ok: true, removed: { id: target.id, nickname: target.nickname } });
     }
 
     if (req.method === 'DELETE' && action === 'players/me') {

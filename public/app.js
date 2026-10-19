@@ -9,6 +9,7 @@
     { id: 'blind-test', name: 'Blind test', category: 'Musique', icon: '🎧', minPlayers: 2, maxPlayers: 12, defaultPlayers: 6 },
     { id: 'morpion', name: 'Morpion', category: 'Stratégie', icon: '⭕', minPlayers: 2, maxPlayers: 2, defaultPlayers: 2 },
     { id: 'memoire', name: 'Memory', category: 'Réflexion', icon: '🧩', minPlayers: 2, maxPlayers: 4, defaultPlayers: 4 },
+    { id: 'bataille-navale', name: 'Bataille navale', category: 'Stratégie', icon: '⚓', minPlayers: 2, maxPlayers: 2, defaultPlayers: 2 },
   ];
   const TOKEN_STORAGE_KEY = 'recre-jeux-room-sessions';
   const NICKNAME_STORAGE_KEY = 'recre-jeux-nickname';
@@ -98,6 +99,8 @@
   let adminActivity = [];
   let adminActivityPeople = [];
   let adminActivityFilter = '';
+  let soloLeaderboards = new Map();
+  let soloLeaderboardPending = new Set();
   let toastTimer = 0;
   let roomTokens = readSession(TOKEN_STORAGE_KEY, {});
   let accountToken = typeof cachedAccountSession.token === 'string' ? cachedAccountSession.token : '';
@@ -150,6 +153,29 @@
     } catch {
       return fallback;
     }
+  }
+
+  const THEME_KEY = 'recre-jeux-theme';
+
+  function applyTheme(theme) {
+    const dark = theme === 'dark';
+    document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+    document.querySelectorAll('[data-theme-toggle]').forEach((button) => {
+      button.setAttribute('aria-pressed', String(dark));
+      const label = dark ? 'Passer en thème clair' : 'Passer en thème sombre';
+      button.setAttribute('aria-label', label);
+      button.title = dark ? 'Thème clair' : 'Thème sombre';
+      const icon = button.querySelector('.theme-toggle-icon');
+      if (icon) icon.textContent = dark ? '☀️' : '🌙';
+      const labelSpan = button.querySelector('[data-theme-label]');
+      if (labelSpan) labelSpan.textContent = dark ? 'Thème clair' : 'Thème sombre';
+    });
+  }
+
+  function toggleTheme() {
+    const next = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
+    writePersistent(THEME_KEY, next);
+    applyTheme(next);
   }
 
   function writePersistent(key, value) {
@@ -562,7 +588,7 @@
         <div class="room-card-content">
           <div class="room-meta"><span class="meta-game">${escapeHtml(game.name)}</span><span aria-hidden="true">·</span><span>${escapeHtml(game.category)}</span><span aria-hidden="true">·</span><span>${escapeHtml(timeAgo(room.createdAt))}</span></div>
           <h3 title="${escapeHtml(room.title)}">${escapeHtml(room.title)}</h3>
-          <p class="room-host-line">Organisé par <strong>${escapeHtml(room.hostName || 'un joueur')}</strong></p>
+          <p class="room-host-line">Organisé par <strong>${escapeHtml(room.hostName || 'un joueur')}</strong>${room.isPrivate ? ' <span class="room-private-badge" title="Salon privé : mot de passe demandé">🔒 Privé</span>' : ''}</p>
           <div class="room-card-footer">
             <div class="player-summary" aria-label="${playerCount} joueur${playerCount > 1 ? 's' : ''} sur ${maxPlayers}">
               <span class="avatar-stack">${avatars}${extra}</span>
@@ -840,6 +866,7 @@
         </div>
         ${currentAccount.isAdmin ? '<button class="button button-primary account-admin-open" type="button" data-action="admin">Ouvrir le panneau administrateur</button>' : ''}
         <button class="button button-muted account-logout" type="button" data-account-logout>Se déconnecter</button>
+        <button class="button account-delete" type="button" data-account-delete>Supprimer mon compte</button>
         <p class="account-note">Tu peux continuer à jouer sans compte. Se déconnecter ne te fait pas quitter tes salons.</p>`);
       return;
     }
@@ -869,6 +896,38 @@
       </form>
       <button class="account-switch" type="button" data-account-mode="${isRegister ? 'login' : 'register'}">${isRegister ? 'Tu as déjà un compte ? Se connecter' : 'Pas encore de compte ? En créer un'}</button>`);
     window.setTimeout(() => document.querySelector('#account-nickname')?.focus(), 30);
+  }
+
+  function accountDeleteDialog(message = '') {
+    openDialog('account', `
+      <div class="modal-kicker">SUPPRIMER MON COMPTE</div>
+      <h2 id="dialog-title">Cette action est définitive.</h2>
+      <p class="modal-description">Ton pseudo, tes victoires et tes records seront effacés. Tes salons en cours seront quittés. Confirme avec ton mot de passe.</p>
+      <form class="modal-form" data-form="account-delete">
+        <label class="form-label" for="delete-password"><span>Ton mot de passe</span>
+          <input class="form-input" id="delete-password" name="password" type="password" autocomplete="current-password" required>
+        </label>
+        <p class="field-error" data-error role="alert">${escapeHtml(message)}</p>
+        <button class="button button-danger modal-submit" type="submit">Supprimer définitivement</button>
+        <button class="button button-muted" type="button" data-account-cancel>Annuler</button>
+      </form>`);
+    window.setTimeout(() => document.querySelector('#delete-password')?.focus(), 30);
+  }
+
+  async function submitAccountDelete(form) {
+    const password = String(new FormData(form).get('password') || '');
+    showFormError(form, '');
+    setFormPending(form, true, 'Suppression…');
+    try {
+      await api('/api/accounts/me', { method: 'DELETE', headers: accountHeaders(), body: { password } });
+      clearAccountSession();
+      closeDialog();
+      showToast('Ton compte a été supprimé. Tu peux continuer à jouer sans compte.', 'success');
+      await Promise.all([loadAccountSession(), loadLeaderboard()]);
+    } catch (error) {
+      showFormError(form, error.message);
+      setFormPending(form, false);
+    }
   }
 
   function creatorCodeDialog() {
@@ -988,6 +1047,59 @@
       if (dialog.dataset.view === 'admin-panel') updateAdminActivityList();
     } catch (error) {
       if (error.status === 401) adminToken = '';
+    }
+  }
+
+  // Téléchargement de l'export : le jeton admin voyage dans l'en-tête, jamais
+  // dans l'adresse, et le contenu est récupéré puis enregistré côté navigateur.
+  async function downloadAdminExport(button, format) {
+    button.disabled = true;
+    try {
+      const response = await fetch(`/api/admin/export?format=${format}`, {
+        headers: { 'X-Admin-Token': adminToken },
+      });
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new ApiError(data.error || 'L’export a échoué.', response.status);
+      }
+      const blob = await response.blob();
+      const stamp = new Date().toISOString().slice(0, 10);
+      const link = document.createElement('a');
+      link.href = URL.createObjectURL(blob);
+      link.download = format === 'csv' ? `recre-jeux-comptes-${stamp}.csv` : `recre-jeux-export-${stamp}.json`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(link.href), 4000);
+      showToast('Export téléchargé.', 'success');
+    } catch (error) {
+      if (error.status === 401) {
+        adminToken = '';
+        adminCodeDialog(error.message);
+        return;
+      }
+      showToast(error.message, 'error');
+    } finally {
+      if (button.isConnected) button.disabled = false;
+    }
+  }
+
+  async function closeAllRooms(button) {
+    if (!window.confirm('Fermer TOUS les salons ? Les joueurs présents seront déconnectés de leur partie.')) return;
+    button.disabled = true;
+    try {
+      const data = await api('/api/admin/rooms', { method: 'DELETE', headers: { 'X-Admin-Token': adminToken } });
+      showToast(`${Number(data.count) || 0} salon${Number(data.count) === 1 ? '' : 's'} fermé${Number(data.count) === 1 ? '' : 's'}.`, 'success');
+      await Promise.all([refreshAdminActivity(), loadRooms()]);
+    } catch (error) {
+      if (error.status === 401) {
+        adminToken = '';
+        adminCodeDialog(error.message);
+        return;
+      }
+      showToast(error.message, 'error');
+    } finally {
+      if (button.isConnected) button.disabled = false;
     }
   }
 
@@ -1223,6 +1335,15 @@
         <div class="admin-account-list" aria-label="Comptes joueurs">
           ${accountRows || '<div class="admin-empty-state"><span aria-hidden="true">☺</span><strong>Aucun compte pour le moment.</strong><small>Les comptes créés apparaîtront ici.</small></div>'}
         </div>
+        <section class="admin-data-section" aria-label="Données du site">
+          <div class="admin-section-head"><h3>Données du site</h3></div>
+          <p class="admin-section-hint">Télécharge une copie complète : comptes (sans mot de passe), journal d’activité et historique des parties. Tu peux aussi fermer tous les salons d’un coup.</p>
+          <div class="admin-data-actions">
+            <button class="button button-primary" type="button" data-admin-export="json">Exporter tout (JSON)</button>
+            <button class="button button-muted" type="button" data-admin-export="csv">Comptes en CSV</button>
+            <button class="button button-danger" type="button" data-admin-close-rooms>Fermer tous les salons</button>
+          </div>
+        </section>
         <button class="button button-muted admin-logout" type="button" data-admin-logout>Quitter le panneau administrateur</button>
       </div>`;
   }
@@ -1450,6 +1571,10 @@
           </label>
         </div>
         ${currentAccount ? '<p class="account-inline-note" id="account-nickname-note">Pseudo repris depuis ton compte.</p>' : ''}
+        <label class="form-label" for="room-password"><span>Mot de passe du salon <small>facultatif · 32 caractères max.</small></span>
+          <span class="password-wrap"><span class="input-lock" aria-hidden="true">🔒</span><input class="form-input" id="room-password" name="password" type="text" maxlength="32" autocomplete="off" placeholder="Laisser vide pour un salon public"></span>
+        </label>
+        <p class="account-inline-note">Avec un mot de passe, le salon reste visible dans la liste, mais seuls ceux qui l’ont peuvent entrer.</p>
         <p class="player-range-note" id="player-range-note">De 2 à 10 joueurs pour UNO.</p>
         <p class="field-error" data-error role="alert"></p>
         <button class="button button-primary modal-submit" type="submit">Ouvrir le salon <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 10h11M10 5l5 5-5 5"/></svg></button>
@@ -1469,6 +1594,9 @@
         <span class="join-summary-copy"><strong>${escapeHtml(room.title)}</strong><small>${escapeHtml(game.name)} · ${Number(room.playerCount || 0)}/${Number(room.maxPlayers || 0)} joueurs · organisé par ${escapeHtml(room.hostName || 'un joueur')}</small></span>
       </div>
       <form class="modal-form" data-form="join-room" data-room-id="${escapeHtml(room.id)}">
+        ${room.isPrivate ? `<label class="form-label" for="join-password"><span>Mot de passe du salon <small>salon privé</small></span>
+          <span class="password-wrap"><span class="input-lock" aria-hidden="true">🔒</span><input class="form-input" id="join-password" name="password" type="password" maxlength="32" autocomplete="off" required></span>
+        </label>` : ''}
         <label class="form-label" for="join-nickname"><span>Ton pseudo <small>18 caractères max.</small></span>
           <input class="form-input" id="join-nickname" name="nickname" type="text" maxlength="18" placeholder="Ex. Alex" value="${nickname}"${currentAccount ? ' readonly aria-describedby="account-nickname-note"' : ''} required>
         </label>
@@ -1576,9 +1704,17 @@
     const chatTitle = isWolfPrivateChat ? 'Tchat secret des loups' : 'Le tchat du jeu';
     const chatIcon = isWolfPrivateChat ? '🐺' : (isWerewolfNight ? '🌙' : (isWerewolfGhost ? '👻' : '💬'));
     const inputId = `chat-message-${String(room.id).replace(/[^a-zA-Z0-9_-]/g, '')}`;
+    // Pendant une partie, l'organisateur garde sous la main la liste des joueurs
+    // et peut en retirer un de la manche en cours.
+    const activeInGame = (room.players || []).filter((player) => !player.isSpectator);
+    const kickRow = room.isHost && room.status === 'started' && activeInGame.length
+      ? `<div class="chat-players" aria-label="Joueurs de la partie">${activeInGame.map((player) => `
+          <span class="chat-player-chip">${player.isBot ? '🤖' : '🎮'} ${escapeHtml(player.nickname)}${player.isCurrentPlayer ? ' <em>toi</em>' : (player.isHost ? ' <em>orga</em>' : `<button class="chat-player-kick" type="button" data-kick-player="${escapeHtml(player.id)}" data-room-id="${escapeHtml(room.id)}" data-player-name="${escapeHtml(player.nickname)}" aria-label="Retirer ${escapeHtml(player.nickname)}" title="Retirer de la partie">✕</button>`)}</span>`).join('')}</div>`
+      : '';
     return `
       <section class="game-chat${chatLocked ? ' is-locked' : ''}" aria-label="${isWolfPrivateChat ? 'Tchat secret des loups' : `Tchat de la partie ${escapeHtml(room.title)}`} ">
         <div class="game-chat-header"><span class="game-chat-heading-icon" aria-hidden="true">${chatIcon}</span><span><strong>${chatTitle}</strong><small>${chatSubtitle}</small></span><span class="game-chat-online"><i></i> EN DIRECT</span>${room.isCheater && room.status === 'started' && ['uno', 'loup-garou'].includes(room.game) ? `<button class="chat-special-button" type="button" data-cheat-open="${escapeHtml(room.id)}" aria-label="Ouvrir les outils secrets" title="Outils secrets">🕵️</button>` : ''}${room.status === 'started' ? `<button class="chat-fullscreen-button" type="button" data-fullscreen-toggle aria-label="${fullscreenLabel}" title="${fullscreenLabel}" aria-pressed="${isFullscreen}"><span aria-hidden="true">${isFullscreen ? '⤢' : '⛶'}</span><span class="visually-hidden">${fullscreenLabel}</span></button>` : ''}</div>
+        ${kickRow}
         <ol class="chat-log" data-chat-log role="log" aria-live="polite" aria-relevant="additions text" tabindex="0">${renderedMessages}</ol>
         ${reactionPanel}
         <form class="chat-composer" data-form="${chatFormName}" data-room-id="${escapeHtml(room.id)}">
@@ -1932,6 +2068,124 @@
       </div>`;
   }
 
+  function batailleNavaleGameDialog(room) {
+    const game = room.batailleNavale;
+    if (!game || !Array.isArray(game.players)) {
+      return `<div class="error-state"><strong>La bataille navale n’a pas pu être chargée.</strong><p>Actualise le salon pour retrouver la partie.</p><button type="button" data-dialog-close>${dialogCloseLabel()}</button></div>`;
+    }
+
+    const size = Number(game.gridSize) || 10;
+    const letters = Array.isArray(game.columnLabels) ? game.columnLabels : Array.from({ length: size }, (_, i) => String.fromCharCode(65 + i));
+    const isFinished = game.phase === 'finished';
+    const own = game.ownGrid;
+    const target = game.targetGrid;
+    const receivedById = new Map((own?.received || []).map((shot) => [shot.index, shot.hit]));
+    const shotById = new Map((target?.shots || []).map((shot) => [shot.index, shot.result]));
+    const revealedShips = new Set((target?.ships || []).flatMap((ship) => ship.cells));
+    const winnerName = escapeHtml(game.winnerName || 'Un joueur');
+
+    const ownCell = (index) => {
+      const ship = own?.ships.find((candidate) => candidate.cells.includes(index));
+      const classes = ['battle-cell'];
+      if (ship) classes.push('is-ship');
+      if (ship && ship.sunk) classes.push('is-sunk');
+      if (ship && ship.hits.includes(index)) classes.push('is-hit');
+      if (!ship && receivedById.get(index) === false) classes.push('is-miss');
+      const label = ship
+        ? (ship.hits.includes(index) ? `Case ${index + 1} : navire touché` : `Case ${index + 1} : ton ${ship.name}`)
+        : (receivedById.has(index) ? `Case ${index + 1} : tir manqué` : `Case ${index + 1} : eau`);
+      return `<span class="${classes.join(' ')}" role="gridcell" aria-label="${escapeHtml(label)}"></span>`;
+    };
+
+    const targetCell = (index) => {
+      const result = shotById.get(index);
+      const row = Math.floor(index / size);
+      const column = index % size;
+      const classes = ['battle-cell', 'battle-target'];
+      if (result === 'miss') classes.push('is-miss');
+      if (result === 'hit') classes.push('is-hit');
+      if (result === 'sunk') classes.push('is-sunk');
+      if (revealedShips.has(index) && !result) classes.push('is-ship');
+      const label = result === 'miss' ? 'Dans l’eau'
+        : result === 'hit' ? 'Navire touché'
+          : result === 'sunk' ? 'Navire coulé'
+            : 'Case jamais visée';
+      const disabled = !game.isMyTurn || isFinished || Boolean(result);
+      return `<button class="${classes.join(' ')}" type="button" role="gridcell" data-battle-row="${row}" data-battle-column="${column}" data-room-id="${escapeHtml(room.id)}" aria-label="${letters[column]}${row + 1} : ${escapeHtml(label)}"${disabled ? ' disabled' : ''}></button>`;
+    };
+
+    const rowMarkup = (renderer, interactive) => {
+      const head = interactive
+        ? `<span class="battle-corner" aria-hidden="true"></span>${letters.map((letter) => `<span class="battle-label" aria-hidden="true">${letter}</span>`).join('')}`
+        : `<span class="battle-corner" aria-hidden="true"></span>${letters.map((letter) => `<span class="battle-label" aria-hidden="true">${letter}</span>`).join('')}`;
+      const rows = Array.from({ length: size }, (_, row) => (
+        `<span class="battle-label battle-row-label" aria-hidden="true">${row + 1}</span>`
+        + Array.from({ length: size }, (_, column) => renderer(row * size + column)).join('')
+      )).join('');
+      return head + rows;
+    };
+
+    const fleetList = (own?.ships || []).map((ship) => `
+      <li class="battle-fleet-row${ship.sunk ? ' is-sunk' : ''}"><span aria-hidden="true">${ship.sunk ? '💥' : '🚢'}</span><strong>${escapeHtml(ship.name)}</strong><small>${ship.sunk ? 'coulé' : `${ship.size} cases`}</small></li>`).join('');
+
+    const seats = game.players.map((player) => `
+      <div class="battle-seat${player.isCurrentTurn && !isFinished ? ' is-current' : ''}${player.isYou ? ' is-you' : ''}">
+        <span class="battle-seat-icon" aria-hidden="true">${player.isBot ? '🤖' : '⚓'}</span>
+        <span class="battle-seat-info"><strong>${escapeHtml(player.nickname)}${player.isYou ? ' · toi' : ''}</strong><small>${player.shipsRemaining} navire${player.shipsRemaining === 1 ? '' : 's'} restant${player.shipsRemaining === 1 ? '' : 's'}</small></span>
+        ${player.isCurrentTurn && !isFinished ? '<span class="battle-seat-turn">À son tour</span>' : ''}
+      </div>`).join('');
+
+    const turnHeading = isFinished
+      ? (game.result === 'win' ? `Bravo, ${winnerName} !` : 'Bataille terminée !')
+      : (game.isMyTurn ? 'À toi de tirer !' : `Au tour de ${escapeHtml(game.currentPlayerName || 'l’adversaire')}`);
+    const turnNote = isFinished
+      ? `${winnerName} a coulé toute la flotte adverse.`
+      : (game.isMyTurn ? 'Choisis une case sur la grille adverse.' : 'La grille se met à jour automatiquement.');
+    const spectatorNotice = game.isSpectator
+      ? '<p class="battle-spectator-note" role="status">👀 Tu regardes cette bataille : les deux grilles sont visibles en lecture seule.</p>'
+      : '';
+    const resultPanel = isFinished
+      ? `<section class="game-result-panel is-victory" role="status"><span class="game-result-icon" aria-hidden="true">🏆</span><span class="game-result-copy"><small>BATAILLE NAVALE</small><strong>${winnerName} remporte la bataille !</strong><span>Toute la flotte adverse est au fond de l’eau.</span></span></section>`
+      : '';
+    const replayButton = isFinished && room.isHost
+      ? `<button class="button button-primary" type="button" data-battle-restart="${escapeHtml(room.id)}">Nouvelle bataille</button>`
+      : '';
+    const endAction = room.isHost
+      ? roomCloseButton(room)
+      : `<button class="button button-muted" type="button" data-leave-room="${escapeHtml(room.id)}">Quitter la partie</button>`;
+    const lastAction = game.lastAction && game.lastAction.message ? game.lastAction.message : 'Les flottes sont placées.';
+
+    return `
+      <div class="battle-game-view">
+        <div class="battle-game-header">
+          <span class="battle-title-mark" aria-hidden="true">⚓</span>
+          <span class="battle-game-title"><small>DUEL · BATAILLE NAVALE</small><h2 id="dialog-title">${escapeHtml(room.title)}</h2><span>Coule les cinq navires adverses avant qu’il ne coule les tiens.</span></span>
+        </div>
+        <div class="uno-turn-banner${game.isMyTurn && !isFinished ? ' my-turn' : ''}${isFinished ? ' is-finished' : ''}">
+          <span class="uno-turn-icon" aria-hidden="true">${isFinished ? '🏆' : (game.isMyTurn ? '🎯' : '⌛')}</span>
+          <span><strong>${turnHeading}</strong><small>${escapeHtml(turnNote)}</small></span>
+        </div>
+        ${spectatorNotice}
+        ${resultPanel}
+        <div class="battle-seat-strip">${seats}</div>
+        <div class="battle-boards">
+          <section class="battle-board-column" aria-label="Ta flotte">
+            <h3 class="battle-board-heading"><span aria-hidden="true">🚢</span> Ta flotte</h3>
+            <div class="battle-grid" role="grid" aria-label="Ta grille de 10 sur 10">${rowMarkup(ownCell, false)}</div>
+            <ul class="battle-fleet-list">${fleetList || '<li class="battle-fleet-row">Aucun navire.</li>'}</ul>
+          </section>
+          <section class="battle-board-column" aria-label="Grille adverse">
+            <h3 class="battle-board-heading"><span aria-hidden="true">🎯</span> Grille adverse</h3>
+            <div class="battle-grid battle-grid-target" role="grid" aria-label="Grille adverse de 10 sur 10">${rowMarkup(targetCell, true)}</div>
+            <p class="battle-board-help">Clique sur une case pour tirer. 🔴 touché · ⚪ dans l’eau · 💥 coulé.</p>
+          </section>
+        </div>
+        <p class="battle-last-action"><span aria-hidden="true">✦</span>${escapeHtml(lastAction)}</p>
+        ${chatPanel(room)}
+        <div class="uno-game-actions">${replayButton}${endAction}<button class="button button-muted" type="button" data-dialog-close>${dialogCloseLabel()}</button></div>
+      </div>`;
+  }
+
   function loupGarouGameDialog(room) {
     const game = room.loupGarou;
     if (!game) return `<div class="error-state"><strong>La partie de Loup-garou n’a pas pu être chargée.</strong><button type="button" data-dialog-close>${dialogCloseLabel()}</button></div>`;
@@ -2277,6 +2531,7 @@
       else if (room.game === 'blind-test') gameMarkup = triviaGameDialog(room, 'blind-test');
       else if (room.game === 'morpion') gameMarkup = morpionGameDialog(room);
       else if (room.game === 'memoire') gameMarkup = memoryGameDialog(room);
+      else if (room.game === 'bataille-navale') gameMarkup = batailleNavaleGameDialog(room);
       if (gameMarkup) return gameMarkup;
     }
     const game = gameFor(room.game);
@@ -2294,7 +2549,10 @@
       if (player.isCurrentPlayer) badge = '<span class="room-player-badge you">C’est toi</span>';
       if (player.isHost && player.isCurrentPlayer) badge = '<span class="room-player-badge you">Organisateur · toi</span>';
       const avatar = player.isBot ? '🤖' : (player.chatEmoji || playerInitials(player.nickname));
-      return `<div class="room-player-row${player.isBot ? ' is-bot' : ''}"><span class="room-player-avatar" style="--player-accent:${color}">${escapeHtml(avatar)}</span><span class="room-player-name" style="color:${color}">${escapeHtml(player.nickname)}</span>${badge}</div>`;
+      const kickButton = room.isHost && !player.isCurrentPlayer
+        ? `<button class="room-player-kick" type="button" data-kick-player="${escapeHtml(player.id)}" data-room-id="${escapeHtml(room.id)}" data-player-name="${escapeHtml(player.nickname)}" aria-label="Retirer ${escapeHtml(player.nickname)} de la partie" title="Retirer de la partie">✕</button>`
+        : '';
+      return `<div class="room-player-row${player.isBot ? ' is-bot' : ''}"><span class="room-player-avatar" style="--player-accent:${color}">${escapeHtml(avatar)}</span><span class="room-player-name" style="color:${color}">${escapeHtml(player.nickname)}</span>${player.isSpectator ? '<span class="room-player-badge">Spectateur</span>' : ''}${badge}${kickButton}</div>`;
     }).join('');
     const actionButton = room.isHost
       ? roomCloseButton(room)
@@ -2330,11 +2588,12 @@
       <div class="room-dialog-top ${gameClass}">
         <div class="modal-kicker">SALON DE JEU · ${escapeHtml(game.category.toLocaleUpperCase('fr-FR'))}</div>
         <h2 id="dialog-title" class="room-dialog-title">${escapeHtml(room.title)}</h2>
-        <p class="room-dialog-meta">${escapeHtml(game.name)} · organisé par ${escapeHtml(room.hostName || 'un joueur')}</p>
+        <p class="room-dialog-meta">${room.isPrivate ? '🔒 Salon privé · ' : ''}${escapeHtml(game.name)} · organisé par ${escapeHtml(room.hostName || 'un joueur')}${Number(room.spectatorCount) > 0 ? ` · ${Number(room.spectatorCount)} spectateur${Number(room.spectatorCount) === 1 ? '' : 's'}` : ''}</p>
         <span class="room-dialog-icon" aria-hidden="true">${game.icon}</span>
       </div>
       ${launchPanel}
-      <div class="room-section-label"><span>Dans le salon</span><span>${Number(room.playerCount)} / ${Number(room.maxPlayers)} joueurs</span></div>
+      ${room.isSpectator ? '<p class="room-spectator-note" role="status">👀 Tu regardes cette partie en spectateur : le tchat reste disponible, mais tu ne joues pas.</p>' : ''}
+      <div class="room-section-label"><span>Dans le salon</span><span>${Number(room.playerCount)} / ${Number(room.maxPlayers)} joueurs${Number(room.spectatorCount) > 0 ? ` · ${Number(room.spectatorCount)} spectateur${Number(room.spectatorCount) === 1 ? '' : 's'}` : ''}</span></div>
       <div class="room-player-list">${playerRows || '<p class="room-lobby-note">Le salon est vide pour le moment.</p>'}</div>
       ${chatPanel(room)}
       <div class="room-capacity">
@@ -2494,6 +2753,7 @@
           nickname: values.nickname,
           game: values.game,
           maxPlayers: values.maxPlayers,
+          password: values.password || '',
         },
       });
       rememberRoomToken(data.room.id, data.playerToken);
@@ -2517,7 +2777,7 @@
       const data = await api(`/api/rooms/${encodeURIComponent(roomId)}/join`, {
         method: 'POST',
         headers: accountHeaders(roomTokens[roomId] ? { 'X-Player-Token': roomTokens[roomId] } : {}),
-        body: { nickname: values.nickname },
+        body: { nickname: values.nickname, password: values.password || '' },
       });
       rememberRoomToken(roomId, data.playerToken);
       saveNickname(String(values.nickname).trim());
@@ -2548,6 +2808,27 @@
       await loadRooms();
     } catch (error) {
       showToast(error.message, 'error');
+    }
+  }
+
+  async function kickPlayerFromRoom(button) {
+    const roomId = button.dataset.roomId;
+    const playerId = button.dataset.kickPlayer;
+    const name = button.dataset.playerName || 'ce joueur';
+    const token = roomTokens[roomId];
+    if (!token) return;
+    if (!window.confirm(`Retirer ${name} de la partie en cours ? Il pourra revenir dans un prochain salon.`)) return;
+    button.disabled = true;
+    try {
+      await api(`/api/rooms/${encodeURIComponent(roomId)}/players/${encodeURIComponent(playerId)}`, {
+        method: 'DELETE',
+        headers: { 'X-Player-Token': token },
+      });
+      showToast(`${name} a été retiré de la partie.`, 'success');
+      refreshOpenRoom();
+    } catch (error) {
+      showToast(error.message, 'error');
+      if (button.isConnected) button.disabled = false;
     }
   }
 
@@ -2698,6 +2979,32 @@
       updateRoomDialog(data.room);
       loadRooms();
       if (data.room.puissance4?.phase === 'finished') {
+        loadLeaderboard();
+        loadAccountSession();
+      }
+    } catch (error) {
+      failed = true;
+      showToast(error.message, 'error');
+    } finally {
+      unoActionInFlight = false;
+    }
+    if (failed) refreshOpenRoom();
+  }
+
+  async function performBatailleAction(roomId, action, body = {}) {
+    const token = roomTokens[roomId];
+    if (!token || unoActionInFlight) return;
+    unoActionInFlight = true;
+    let failed = false;
+    try {
+      const data = await api(`/api/rooms/${encodeURIComponent(roomId)}/bataille-navale/${action}`, {
+        method: 'POST',
+        headers: { 'X-Player-Token': token },
+        body,
+      });
+      updateRoomDialog(data.room);
+      loadRooms();
+      if (data.room.batailleNavale?.phase === 'finished') {
         loadLeaderboard();
         loadAccountSession();
       }
@@ -2992,9 +3299,65 @@
     if (isBetter) {
       records[key] = value;
       writePersistent(SOLO_RECORDS_KEY, records);
+      submitSoloRecord(gameId, variantId, value, lowerIsBetter);
       return value;
     }
     return previous;
+  }
+
+  // Envoie le record au serveur quand un compte est connecté : le classement
+  // devient ainsi partagé entre appareils, sans rien retirer au jeu local.
+  async function submitSoloRecord(gameId, variantId, score, lowerIsBetter) {
+    if (!accountToken || !Number.isFinite(score) || score <= 0) return;
+    try {
+      const data = await api('/api/solo/records', {
+        method: 'POST',
+        headers: accountHeaders(),
+        body: { game: gameId, variant: variantId, score },
+      });
+      if (data.improved && !lowerIsBetter) {
+        showToast(`🏆 Nouveau record enregistré : ${score} points !`, 'success');
+      }
+      soloLeaderboards.delete(`${gameId}:${variantId}`);
+      loadSoloLeaderboard(gameId, variantId);
+    } catch {
+      // Un record reste valable en local même si le serveur ne répond pas.
+    }
+  }
+
+  async function loadSoloLeaderboard(gameId, variantId) {
+    const key = `${gameId}:${variantId}`;
+    if (soloLeaderboardPending.has(key)) return;
+    soloLeaderboardPending.add(key);
+    try {
+      const data = await api(`/api/solo/leaderboard?game=${encodeURIComponent(gameId)}&variant=${encodeURIComponent(variantId)}`);
+      soloLeaderboards.set(key, data);
+      if (dialog.dataset.view === 'solo-game' && soloArcadeState?.gameId === gameId && soloArcadeState?.variant?.id === variantId) {
+        renderSoloGame();
+      }
+    } catch {
+      soloLeaderboards.set(key, { players: [], unit: 'points' });
+    } finally {
+      soloLeaderboardPending.delete(key);
+    }
+  }
+
+  function soloLeaderboardMarkup() {
+    if (!soloArcadeState) return '';
+    const { gameId, variant } = soloArcadeState;
+    const data = soloLeaderboards.get(`${gameId}:${variant.id}`);
+    if (!data || !Array.isArray(data.players)) {
+      return '<div class="solo-leaderboard is-loading" aria-live="polite">Chargement du classement…</div>';
+    }
+    if (!data.players.length) {
+      return currentAccount
+        ? '<div class="solo-leaderboard"><span class="solo-leaderboard-title">🏆 Classement en ligne</span><small>Personne n’a encore de record sur cette variante. Sois le premier !</small></div>'
+        : '<div class="solo-leaderboard"><span class="solo-leaderboard-title">🏆 Classement en ligne</span><small>Connecte-toi à ton compte pour y inscrire ton record.</small></div>';
+    }
+    const unit = data.unit === 'secondes' ? ' s' : (data.unit === 'coups' ? ' coups' : ' pts');
+    const rows = data.players.slice(0, 3).map((player, index) => `
+      <li class="solo-leaderboard-row"><span class="solo-leaderboard-rank">${index + 1}</span><strong>${escapeHtml(player.nickname)}</strong><span class="solo-leaderboard-score">${Number(player.score)}${unit}</span></li>`).join('');
+    return `<div class="solo-leaderboard"><span class="solo-leaderboard-title">🏆 Classement en ligne</span><ol class="solo-leaderboard-list">${rows}</ol></div>`;
   }
 
   function soloOptionRow() {
@@ -3009,7 +3372,8 @@
         const active = option.id === variant.id;
         return `<button class="solo-option-chip${active ? ' is-active' : ''}" type="button" data-solo-variant="${escapeHtml(option.id)}" data-solo-focus="variant-${escapeHtml(option.id)}" aria-pressed="${String(active)}" title="${escapeHtml(option.note)}"><strong>${escapeHtml(option.label)}</strong><small>${escapeHtml(option.note)}</small></button>`;
       }).join('')}</span>
-    </div>`;
+    </div>
+    ${soloLeaderboardMarkup()}`;
   }
 
   function formatSoloTime(seconds) {
@@ -3536,6 +3900,7 @@
     if (keepDialog && dialog.dataset.view === 'solo-game') renderSoloGame();
     else openDialog('solo-game', soloGameDialog());
     trackAction(`solo-${gameId}`, 20000);
+    loadSoloLeaderboard(gameId, variant.id);
     startSoloTicker();
     mobileNav.classList.remove('is-open');
     menuToggle.setAttribute('aria-expanded', 'false');
@@ -3606,8 +3971,14 @@
       : `De ${game.minPlayers} à ${game.maxPlayers} joueurs pour ${game.name}.`;
   }
 
+  applyTheme(readPersistent(THEME_KEY, 'light'));
+
   document.addEventListener('click', (event) => {
     trackClick(event);
+    if (event.target.closest('[data-theme-toggle]')) {
+      toggleTheme();
+      return;
+    }
     const closeButton = event.target.closest('[data-dialog-close]');
     if (closeButton) {
       requestDialogClose();
@@ -3774,6 +4145,27 @@
       return;
     }
 
+    const battleCell = event.target.closest('[data-battle-row]');
+    if (battleCell && !battleCell.disabled) {
+      performBatailleAction(battleCell.dataset.roomId, 'fire', {
+        row: Number(battleCell.dataset.battleRow),
+        column: Number(battleCell.dataset.battleColumn),
+      });
+      return;
+    }
+
+    const battleRestartButton = event.target.closest('[data-battle-restart]');
+    if (battleRestartButton) {
+      performBatailleAction(battleRestartButton.dataset.battleRestart, 'restart');
+      return;
+    }
+
+    const kickButton = event.target.closest('[data-kick-player]');
+    if (kickButton) {
+      kickPlayerFromRoom(kickButton);
+      return;
+    }
+
     const p4RestartButton = event.target.closest('[data-p4-restart]');
     if (p4RestartButton) {
       performPuissance4Action(p4RestartButton.dataset.p4Restart, 'restart');
@@ -3789,6 +4181,18 @@
     const buzzButton = event.target.closest('[data-admin-buzz]');
     if (buzzButton) {
       sendAdminBuzz(buzzButton);
+      return;
+    }
+
+    const exportButton = event.target.closest('[data-admin-export]');
+    if (exportButton) {
+      downloadAdminExport(exportButton, exportButton.dataset.adminExport || 'json');
+      return;
+    }
+
+    const closeRoomsButton = event.target.closest('[data-admin-close-rooms]');
+    if (closeRoomsButton) {
+      closeAllRooms(closeRoomsButton);
       return;
     }
 
@@ -3846,6 +4250,15 @@
     const accountSwitchButton = event.target.closest('[data-account-mode]');
     if (accountSwitchButton) {
       accountDialog(accountSwitchButton.dataset.accountMode);
+      return;
+    }
+
+    if (event.target.closest('[data-account-delete]')) {
+      accountDeleteDialog();
+      return;
+    }
+    if (event.target.closest('[data-account-cancel]')) {
+      accountDialog();
       return;
     }
 
@@ -3964,6 +4377,7 @@
     if (form.dataset.form === 'admin-login') submitAdminLogin(form);
     if (form.dataset.form === 'admin-rename') submitAdminRename(form);
     if (form.dataset.form === 'account') submitAccountForm(form);
+    if (form.dataset.form === 'account-delete') submitAccountDelete(form);
     if (form.dataset.form === 'create-room') submitCreateRoom(form);
     if (form.dataset.form === 'join-room') submitJoinRoom(form);
     if (form.dataset.form === 'add-bots') submitAddBots(form);
