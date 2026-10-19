@@ -1,5 +1,7 @@
 'use strict';
 
+const botDifficulty = require('./bot-difficulty');
+
 const crypto = require('node:crypto');
 
 const QUESTION_COUNT = 8;
@@ -223,7 +225,8 @@ function processBots(room) {
     if (!bot) break;
     const question = currentQuestion(state);
     let choiceIndex;
-    const botKnowsAnswer = crypto.randomInt(100) < (state.kind === 'blind-test' ? 42 : 62);
+    const knowledgeRate = botDifficulty.knowledgeRate(state.kind, room.botDifficulty);
+    const botKnowsAnswer = crypto.randomInt(1000) < Math.round(knowledgeRate * 1000);
     if (botKnowsAnswer) {
       choiceIndex = question.correctIndex;
     } else {

@@ -1,5 +1,7 @@
 'use strict';
 
+const botDifficulty = require('./bot-difficulty');
+
 const MAX_BOT_ACTIONS_PER_UPDATE = 2;
 const WINNING_LINES = Object.freeze([
   [0, 1, 2], [3, 4, 5], [6, 7, 8],
@@ -112,13 +114,19 @@ function findImmediateMove(board, playerId) {
   return null;
 }
 
-function chooseBotCell(state, bot) {
+function chooseBotCell(state, bot, difficulty = 'normal') {
+  const emptyCells = BOT_PREFERENCE.filter((cell) => state.board[cell] === null);
+  // Niveau facile : le bot joue au hasard une fois sur deux environ.
+  if (botDifficulty.shouldBlunder(difficulty) && emptyCells.length) {
+    return botDifficulty.pickRandom(emptyCells);
+  }
   const immediateWin = findImmediateMove(state.board, bot.id);
   if (immediateWin !== null) return immediateWin;
   const opponentId = state.playerOrder.find((playerId) => playerId !== bot.id);
+  // Niveau difficile : on bloque toujours, même quand on pourrait gagner plus tard.
   const block = findImmediateMove(state.board, opponentId);
   if (block !== null) return block;
-  return BOT_PREFERENCE.find((cell) => state.board[cell] === null);
+  return emptyCells[0];
 }
 
 function processBots(room) {
@@ -128,7 +136,7 @@ function processBots(room) {
   while (state.phase === 'playing' && actions < MAX_BOT_ACTIONS_PER_UPDATE) {
     const bot = room.players.find((player) => player.id === state.currentPlayerId && player.isBot);
     if (!bot) break;
-    const cell = chooseBotCell(state, bot);
+    const cell = chooseBotCell(state, bot, room.botDifficulty);
     if (cell === undefined) break;
     playCell(room, bot, cell);
     actions += 1;

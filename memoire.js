@@ -1,5 +1,7 @@
 'use strict';
 
+const botDifficulty = require('./bot-difficulty');
+
 const crypto = require('node:crypto');
 
 const PAIR_COUNT = 8;
@@ -145,9 +147,14 @@ function continueAfterMismatch(room, player) {
   state.lastAction = actionRecord('turn', player, `${previousPlayer} passe son tour. À ${nextPlayer?.nickname || 'au joueur suivant'} !`);
 }
 
-function chooseBotCard(state, bot) {
+function chooseBotCard(state, bot, difficulty = 'normal') {
   const available = state.cards.filter((card) => isCardAvailable(state, card));
   if (!available.length) return null;
+  // Niveau facile : le bot oublie souvent ce qu'il a vu et pioche au hasard.
+  if (botDifficulty.shouldBlunder(difficulty)) {
+    const randomCard = botDifficulty.pickRandom(available, () => crypto.randomInt(1_000_000) / 1_000_000);
+    if (randomCard) return randomCard;
+  }
   const known = state.botMemory?.[bot.id] || {};
   const visiblePair = state.revealedCardIds.length === 1
     ? state.cards.find((card) => card.id === state.revealedCardIds[0])?.pairId
@@ -184,7 +191,7 @@ function processBots(room) {
       actions += 1;
       continue;
     }
-    const card = chooseBotCard(state, bot);
+    const card = chooseBotCard(state, bot, room.botDifficulty);
     if (!card) break;
     flipCard(room, bot, card.id);
     actions += 1;

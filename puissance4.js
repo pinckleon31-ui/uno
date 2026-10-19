@@ -1,5 +1,7 @@
 'use strict';
 
+const botDifficulty = require('./bot-difficulty');
+
 const ROWS = 6;
 const COLUMNS = 7;
 const CONNECT = 4;
@@ -148,9 +150,15 @@ function simulateDrop(board, column, playerId) {
   return { board: nextBoard, row };
 }
 
-function chooseBotColumn(state, botId) {
+function chooseBotColumn(state, botId, difficulty = 'normal') {
   const openColumns = CENTER_PREFERENCE.filter((column) => lowestOpenRow(state.board, column) >= 0);
   if (!openColumns.length) return -1;
+
+  // Niveau facile : le bot ignore ses heuristiques une fois sur deux environ.
+  if (botDifficulty.shouldBlunder(difficulty)) {
+    const careless = botDifficulty.pickRandom(openColumns);
+    return careless === null ? openColumns[0] : careless;
+  }
 
   for (const column of openColumns) {
     const move = simulateDrop(state.board, column, botId);
@@ -175,7 +183,7 @@ function processBots(room) {
   while (state.phase === 'playing' && actions < MAX_BOT_ACTIONS_PER_UPDATE) {
     const player = room.players.find((candidate) => candidate.id === state.currentPlayerId);
     if (!player || !player.isBot) break;
-    const column = chooseBotColumn(state, player.id);
+    const column = chooseBotColumn(state, player.id, room.botDifficulty);
     if (column < 0) {
       state.phase = 'finished';
       state.result = 'draw';

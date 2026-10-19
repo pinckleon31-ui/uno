@@ -12,6 +12,7 @@ const blindTestEngine = require('./blind_melody');
 const morpionEngine = require('./morpion');
 const memoireEngine = require('./memoire');
 const batailleNavaleEngine = require('./bataille-navale');
+const botDifficulty = require('./bot-difficulty');
 
 const PORT = Number.parseInt(process.env.PORT || '3000', 10);
 const HOST = '0.0.0.0';
@@ -21,6 +22,15 @@ const DATA_FILE = path.join(DATA_DIR, 'rooms.json');
 const ACCOUNTS_FILE = path.join(DATA_DIR, 'accounts.json');
 const ACTIVITY_FILE = path.join(DATA_DIR, 'activity.json');
 const HISTORY_FILE = path.join(DATA_DIR, 'history.json');
+
+// Crée le dossier de données dès le démarrage : sur un hébergeur, mieux vaut
+// un message clair tout de suite qu'une erreur au premier salon créé.
+try {
+  fs.mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
+} catch (error) {
+  console.error(`Impossible de créer le dossier de données ${DATA_DIR} :`, error.message);
+  process.exit(1);
+}
 const CREATOR_CODE = String(process.env.CREATOR_CODE || '').trim();
 const PRESENCE_TTL = 2 * 60 * 1000;
 const ACCOUNT_SESSION_TTL = 30 * 24 * 60 * 60 * 1000;
@@ -407,6 +417,7 @@ function publicChatMessages(room) {
       color: CHAT_COLORS.includes(message.color) ? message.color : style.chatColor,
       text: String(message.text || ''),
       kind: message.kind === 'reaction' ? 'reaction' : 'message',
+      isSpectator: message.isSpectator === true,
       createdAt: Number(message.createdAt) || Date.now(),
     };
   });
@@ -521,6 +532,9 @@ function publicRoom(room, token = '') {
     playerCount: activePlayers(room).length,
     spectatorCount: players.length - activePlayers(room).length,
     isPrivate: Boolean(room.passwordHash),
+    botDifficulty: botDifficulty.normalize(room.botDifficulty),
+    banCount: (Array.isArray(room.bannedAccountIds) ? room.bannedAccountIds.length : 0)
+      + (Array.isArray(room.bannedNames) ? room.bannedNames.length : 0),
     isFull: activePlayers(room).length >= room.maxPlayers,
     hostName: host ? host.nickname : 'Organisateur',
     isCurrentPlayer: Boolean(currentPlayer),
@@ -1368,13 +1382,21 @@ async function handleApi(req, res, url) {
       }
     }
     if (roomsChanged) saveRooms();
-    logActivity({
-      nickname: account.nickname,
-      kind: 'compte',
-      text: 'a supprimé son compte',
-      dedupeKey: `suppression-perso:${account.id}`,
-      dedupeMs: 0,
-    });
+    // « Tout effacer » : les lignes du journal liées à ce compte disparaissent
+    // et son pseudo est retiré de l'historique des parties.
+    activityLog = activityLog.filter((entry) => entry.accountId !== account.id);
+    let historyChanged = false;
+    for (const game of gameHistory) {
+      const players = game.playerNames.filter((name) => name !== account.nickname);
+      const winners = game.winnerNames.filter((name) => name !== account.nickname);
+      if (players.length !== game.playerNames.length || winners.length !== game.winnerNames.length) {
+        game.playerNames = players;
+        game.winnerNames = winners;
+        historyChanged = true;
+      }
+    }
+    if (historyChanged) saveHistory();
+    saveActivity();
     return sendJson(res, 200, { ok: true });
   }
 
@@ -1678,6 +1700,7 @@ async function handleApi(req, res, url) {
         req.resume();
         return sendJson(res, 401, { error: 'Rejoins ce salon pour participer au tchat.' });
       }
+      // Les spectateurs peuvent parler : leur message est simplement étiqueté.
       if (room.game === 'loup-garou' && room.gameState) {
         if (!['day', 'finished'].includes(room.gameState.phase)) {
           req.resume();
@@ -1717,6 +1740,8 @@ async function handleApi(req, res, url) {
         color: style.chatColor,
         text,
         kind: isReaction ? 'reaction' : 'message',
+        // Les spectateurs peuvent écrire : leur message porte une étiquette.
+        isSpectator: Boolean(player.isSpectator),
         createdAt: now,
       });
       if (room.chatMessages.length > CHAT_MAX_MESSAGES) {
@@ -1767,6 +1792,24 @@ async function handleApi(req, res, url) {
         player.lastSeenAt = Date.now();
         saveRooms();
         return sendJson(res, 200, { room: publicRoom(room, playerToken), playerToken });
+      }
+
+      // Un joueur retiré par l'organisateur ne peut pas revenir avant la fin de
+      // la manche. Une fois la partie terminée, l'exclusion tombe d'elle-même.
+      const banned = Array.isArray(room.bannedAccountIds) ? room.bannedAccountIds : [];
+      const bannedNames = Array.isArray(room.bannedNames) ? room.bannedNames : [];
+      const askedName = account ? account.nickname : cleanText(body.nickname, 18);
+      const roundFinished = room.status === 'started' && room.gameState && room.gameState.phase === 'finished';
+      const isBanned = Boolean(account && banned.includes(account.id))
+        || (!account && bannedNames.includes(askedName.toLocaleLowerCase('fr-FR')));
+      if (isBanned && !roundFinished) {
+        return sendJson(res, 403, { error: 'L’organisateur t’a retiré de cette partie. Tu pourras revenir à la fin de la manche.' });
+      }
+      if (isBanned && roundFinished) {
+        // La manche est terminée : l'exclusion est levée pour de bon.
+        room.bannedAccountIds = banned.filter((accountId) => !account || accountId !== account.id);
+        room.bannedNames = bannedNames.filter((nameKey) => account || nameKey !== askedName.toLocaleLowerCase('fr-FR'));
+        saveRooms();
       }
 
       // Salon privé : le mot de passe est vérifié côté serveur, jamais envoyé au client.
@@ -1958,6 +2001,36 @@ async function handleApi(req, res, url) {
       return sendJson(res, 200, { room: publicRoom(room, playerToken) });
     }
 
+    if (req.method === 'POST' && action.startsWith('bataille-navale/') && action !== 'bataille-navale/fire') {
+      const player = findParticipant(room, playerToken);
+      if (!player || player.isBot) {
+        req.resume();
+        return sendJson(res, 401, { error: 'Rejoins cette partie avec ton pseudo pour placer tes navires.' });
+      }
+      if (room.game !== 'bataille-navale') {
+        req.resume();
+        return sendJson(res, 409, { error: 'Ces actions sont disponibles pour la Bataille navale uniquement.' });
+      }
+      const body = await readJson(req);
+      if (action === 'bataille-navale/place') {
+        batailleNavaleEngine.placeShip(room, player, body);
+      } else if (action === 'bataille-navale/remove') {
+        batailleNavaleEngine.removeShip(room, player, body.index);
+      } else if (action === 'bataille-navale/clear') {
+        batailleNavaleEngine.clearFleet(room, player);
+      } else if (action === 'bataille-navale/random') {
+        batailleNavaleEngine.randomizeFleet(room, player);
+      } else if (action === 'bataille-navale/ready') {
+        batailleNavaleEngine.ready(room, player);
+      } else {
+        return sendJson(res, 404, { error: 'Cette action de bataille navale n’existe pas.' });
+      }
+      processRoomBots(room);
+      recordRoomVictory(room);
+      saveRooms();
+      return sendJson(res, 200, { room: publicRoom(room, playerToken) });
+    }
+
     if (req.method === 'POST' && action === 'bataille-navale/fire') {
       const player = findParticipant(room, playerToken);
       if (!player || player.isBot) {
@@ -2002,7 +2075,9 @@ async function handleApi(req, res, url) {
       }
       await readJson(req);
       room.gameState = engine.createGame(activePlayers(room));
-      room.players.forEach((player) => { if (player.isSpectator) player.isSpectator = true; });
+      // Nouvelle manche : les exclusions de la précédente sont levées.
+      room.bannedAccountIds = [];
+      room.bannedNames = [];
       if (room.game === 'loup-garou') room.wolfChatMessages = [];
       room.startedAt = room.gameState.startedAt;
       processRoomBots(room);
@@ -2060,6 +2135,9 @@ async function handleApi(req, res, url) {
 
       const body = await readJson(req);
       const requestedCount = Number(body.count);
+      if (Object.hasOwn(body, 'difficulty')) {
+        room.botDifficulty = botDifficulty.normalize(body.difficulty);
+      }
       const availableSeats = Math.max(0, room.maxPlayers - activePlayers(room).length);
       if (!Number.isInteger(requestedCount) || requestedCount < 1) {
         return sendJson(res, 400, { error: 'Choisis au moins un bot à ajouter.' });
@@ -2143,6 +2221,15 @@ async function handleApi(req, res, url) {
         return sendJson(res, 400, { error: 'L’organisateur ne peut pas se retirer lui-même.' });
       }
       room.players = room.players.filter((candidate) => candidate.id !== target.id);
+      if (!Array.isArray(room.bannedAccountIds)) room.bannedAccountIds = [];
+      if (!Array.isArray(room.bannedNames)) room.bannedNames = [];
+      if (target.accountId && !room.bannedAccountIds.includes(target.accountId)) {
+        room.bannedAccountIds.push(target.accountId);
+      }
+      if (!target.accountId) {
+        const nameKey = String(target.nickname || '').toLocaleLowerCase('fr-FR');
+        if (nameKey && !room.bannedNames.includes(nameKey)) room.bannedNames.push(nameKey);
+      }
       if (room.gameState) {
         syncRoomPlayers(room);
         processRoomBots(room);

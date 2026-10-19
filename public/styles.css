@@ -1901,3 +1901,31 @@ html[data-theme="dark"] .memory-card.is-matched .memory-card-face { background: 
 .chat-player-chip { display: inline-flex; align-items: center; gap: 5px; padding: 3px 7px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); font-size: 8px; font-weight: 800; }
 .chat-player-chip em { color: var(--ink-faint); font-style: normal; font-weight: 700; }
 .chat-player-kick { display: grid; place-items: center; width: 16px; height: 16px; padding: 0; border: 1px solid #f0c8c4; border-radius: 5px; background: #fff4f3; color: #a83226; font-size: 8px; font-weight: 900; cursor: pointer; }
+
+/* Placement manuel des navires (bataille navale). */
+.battle-placement-view { gap: 10px; }
+.battle-placement-status { padding: 9px 12px; border: 1px solid #e3def8; border-radius: 11px; background: #f6f3ff; color: #4b3fb0; font-size: 10px; font-weight: 800; }
+.battle-placement-status.is-ready { border-color: #bfe3c8; background: #eefaf1; color: #1f7a3a; }
+.battle-ship-bar { display: flex; flex-wrap: wrap; gap: 6px; }
+.battle-ship-chip { display: inline-flex; align-items: center; gap: 5px; padding: 8px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); color: var(--ink); font-size: 10px; font-weight: 800; cursor: pointer; }
+.battle-ship-chip.is-active { border-color: #8f7ff0; background: #efeaff; box-shadow: 0 0 0 2px rgba(101, 88, 232, .16); }
+.battle-ship-chip:disabled { opacity: .45; cursor: default; }
+.battle-ship-chip em { color: var(--ink-faint); font-style: normal; font-weight: 700; }
+.battle-placement-tools { display: flex; flex-wrap: wrap; gap: 6px; }
+.battle-placement-tools .button { flex: 1 1 auto; justify-content: center; font-size: 10px; }
+.battle-grid-place .battle-place { cursor: crosshair; }
+.battle-grid-place .battle-place:not(:disabled):hover { background: #d7e7ff; }
+.battle-ready-button { width: 100%; justify-content: center; }
+.battle-player-status { display: flex; flex-wrap: wrap; gap: 6px; }
+.battle-ready-chip { padding: 5px 9px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface-soft); color: var(--ink-soft); font-size: 9px; font-weight: 800; }
+.battle-ready-chip.is-ready { border-color: #bfe3c8; background: #eefaf1; color: #1f7a3a; }
+html[data-theme="dark"] .battle-placement-status { border-color: #3b3568; background: #241f3a; color: #c9bfff; }
+html[data-theme="dark"] .battle-placement-status.is-ready { border-color: #245c3a; background: #17301f; color: #9fe0b4; }
+html[data-theme="dark"] .battle-ship-chip.is-active { border-color: #6d5fd0; background: #2b2650; }
+html[data-theme="dark"] .battle-grid-place .battle-place:not(:disabled):hover { background: #2b3a55; }
+html[data-theme="dark"] .battle-ready-chip { background: #232135; color: #b4b1cc; }
+html[data-theme="dark"] .battle-ready-chip.is-ready { border-color: #245c3a; background: #17301f; color: #9fe0b4; }
+
+/* Étiquette « spectateur » dans le tchat. */
+.chat-spectator-tag { flex: 0 0 auto; padding: 2px 5px; border: 1px solid #d9d3f6; border-radius: 6px; background: #f1edff; color: #6455c8; font-size: 7px; font-weight: 900; letter-spacing: .02em; white-space: nowrap; }
+html[data-theme="dark"] .chat-spectator-tag { border-color: #403970; background: #2a2547; color: #c2b8ff; }

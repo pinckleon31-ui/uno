@@ -156,6 +156,7 @@
   }
 
   const THEME_KEY = 'recre-jeux-theme';
+  const SALON_PASSWORDS_KEY = 'recre-jeux-salon-passwords';
 
   function applyTheme(theme) {
     const dark = theme === 'dark';
@@ -1543,6 +1544,11 @@
     closeDialog();
   }
 
+  function salonPasswordFor(roomId) {
+    const passwords = readSession(SALON_PASSWORDS_KEY, {});
+    return typeof passwords[roomId] === 'string' ? passwords[roomId] : '';
+  }
+
   function createRoomDialog() {
     const choices = GAMES.map((game) => `
       <label class="game-choice">
@@ -1595,7 +1601,7 @@
       </div>
       <form class="modal-form" data-form="join-room" data-room-id="${escapeHtml(room.id)}">
         ${room.isPrivate ? `<label class="form-label" for="join-password"><span>Mot de passe du salon <small>salon privé</small></span>
-          <span class="password-wrap"><span class="input-lock" aria-hidden="true">🔒</span><input class="form-input" id="join-password" name="password" type="password" maxlength="32" autocomplete="off" required></span>
+          <span class="password-wrap"><span class="input-lock" aria-hidden="true">🔒</span><input class="form-input" id="join-password" name="password" type="password" maxlength="32" autocomplete="off" value="${escapeHtml(salonPasswordFor(room.id))}" required></span>
         </label>` : ''}
         <label class="form-label" for="join-nickname"><span>Ton pseudo <small>18 caractères max.</small></span>
           <input class="form-input" id="join-nickname" name="nickname" type="text" maxlength="18" placeholder="Ex. Alex" value="${nickname}"${currentAccount ? ' readonly aria-describedby="account-nickname-note"' : ''} required>
@@ -1691,7 +1697,7 @@
           ? `<span class="chat-reaction-bubble" aria-label="Réaction ${escapeHtml(message.text)}">${escapeHtml(message.text)}</span><span class="chat-reaction-caption">a envoyé une réaction</span>`
           : `<p class="chat-message-text">${escapeHtml(message.text)}</p>`;
         return `<li class="chat-message${isReaction ? ' is-reaction' : ''}" style="--chat-accent:${color}">
-          <div class="chat-message-heading"><span class="chat-member-emoji" aria-hidden="true">${escapeHtml(message.emoji || '🙂')}</span><strong>${escapeHtml(message.nickname || 'Joueur')}</strong><time datetime="${chatIsoTimestamp(message.createdAt)}">${escapeHtml(chatClock(message.createdAt))}</time></div>
+          <div class="chat-message-heading"><span class="chat-member-emoji" aria-hidden="true">${escapeHtml(message.emoji || '🙂')}</span><strong>${escapeHtml(message.nickname || 'Joueur')}</strong>${message.isSpectator ? '<span class="chat-spectator-tag" title="Ce joueur regarde la partie en spectateur">👀 spectateur</span>' : ''}<time datetime="${chatIsoTimestamp(message.createdAt)}">${escapeHtml(chatClock(message.createdAt))}</time></div>
           <div class="chat-message-content">${content}</div>
         </li>`;
       }).join('')
@@ -2068,11 +2074,87 @@
       </div>`;
   }
 
+  // --- Bataille navale : écran de placement des navires ---
+  let battleOrientation = 'horizontal';
+  let battlePlacingSize = 0;
+
+  function battlePlacementMarkup(room, game) {
+    const size = Number(game.gridSize) || 10;
+    const placement = game.placement || { ships: [], remaining: [], ready: false, opponentReady: false, canPlace: true };
+    const placedCells = new Map();
+    for (const ship of placement.ships) {
+      for (const cell of ship.cells) placedCells.set(cell, ship.size);
+    }
+    const remaining = placement.remaining.slice().sort((a, b) => b - a);
+    const activeSize = remaining.includes(battlePlacingSize) ? battlePlacingSize : (remaining[0] || 0);
+
+    const cells = Array.from({ length: size * size }, (_, index) => {
+      const shipSize = placedCells.get(index);
+      const isPlaced = Boolean(shipSize);
+      const label = isPlaced ? `Case ${index + 1} : navire de ${shipSize} cases` : `Case ${index + 1} : eau`;
+      return `<button class="battle-cell battle-place${isPlaced ? ' is-ship' : ''}" type="button" role="gridcell" data-place-row="${Math.floor(index / size)}" data-place-column="${index % size}" aria-label="${escapeHtml(label)}"${placement.canPlace ? '' : ' disabled'}></button>`;
+    }).join('');
+
+    const shipButtons = FLEET_SIZES.map((shipSize) => {
+      const left = remaining.filter((candidate) => candidate === shipSize).length;
+      const active = activeSize === shipSize;
+      return `<button class="battle-ship-chip${active ? ' is-active' : ''}" type="button" data-place-size="${shipSize}" aria-pressed="${String(active)}"${left === 0 || !placement.canPlace ? ' disabled' : ''}><span aria-hidden="true">🚢</span> ${shipSize} cases${left > 1 ? ` <em>×${left}</em>` : ''}${left === 0 ? ' <em>placé</em>' : ''}</button>`;
+    }).join('');
+
+    const orientationLabel = battleOrientation === 'horizontal' ? 'Horizontal ↔' : 'Vertical ↕';
+    const statusText = placement.ready
+      ? (placement.opponentReady ? 'Les deux flottes sont prêtes…' : 'Flotte validée. En attente de l’adversaire…')
+      : (remaining.length ? `Place encore ${remaining.length} navire${remaining.length > 1 ? 's' : ''}.` : 'Tous tes navires sont placés. Tu peux valider !');
+
+    return `
+      <div class="battle-game-view battle-placement-view">
+        <div class="battle-game-header">
+          <span class="battle-title-mark" aria-hidden="true">⚓</span>
+          <span class="battle-game-title"><small>BATAILLE NAVALE · PLACEMENT</small><h2 id="dialog-title">${escapeHtml(room.title)}</h2><span>Pose tes cinq navires sans qu’ils se touchent, puis valide ta flotte.</span></span>
+        </div>
+        <div class="battle-placement-status${placement.ready ? ' is-ready' : ''}" role="status">${escapeHtml(statusText)}</div>
+        <div class="battle-ship-bar" role="group" aria-label="Choisis un navire à placer">${shipButtons}</div>
+        <div class="battle-placement-tools">
+          <button class="button button-muted" type="button" data-place-rotate aria-label="Changer l’orientation (${orientationLabel})"><span aria-hidden="true">⟳</span> ${orientationLabel}</button>
+          <button class="button button-muted" type="button" data-place-random>🎲 Placer au hasard</button>
+          <button class="button button-muted" type="button" data-place-clear>↺ Tout enlever</button>
+        </div>
+        <div class="battle-board-column">
+          <h3 class="battle-board-heading"><span aria-hidden="true">🚢</span> Ta grille</h3>
+          <div class="battle-grid battle-grid-place" role="grid" aria-label="Grille de placement">${cells}</div>
+          <p class="battle-board-help">Choisis un navire, une orientation, puis clique sur la première case.</p>
+        </div>
+        <button class="button button-primary battle-ready-button" type="button" data-place-ready${(!remaining.length && !placement.ready) ? '' : ' disabled'}>${placement.ready ? 'Flotte validée' : 'Prêt !'}</button>
+        <div class="battle-player-status">${game.players.map((player) => `<span class="battle-ready-chip${player.isReady ? ' is-ready' : ''}">${player.isBot ? '🤖' : '🎮'} ${escapeHtml(player.nickname)} ${player.isReady ? '✓' : '…'}</span>`).join('')}</div>
+      </div>`;
+  }
+
+  async function performBattlePlacement(roomId, action, body = {}) {
+    const token = roomTokens[roomId];
+    if (!token) return;
+    try {
+      const data = await api(`/api/rooms/${encodeURIComponent(roomId)}/bataille-navale/${action}`, {
+        method: 'POST',
+        headers: { 'X-Player-Token': token },
+        body,
+      });
+      updateRoomDialog(data.room);
+      if (data.room.batailleNavale?.phase === 'playing') {
+        showToast('Les deux flottes sont prêtes : la bataille commence !', 'success');
+      }
+    } catch (error) {
+      showToast(error.message, 'error');
+    }
+  }
+
   function batailleNavaleGameDialog(room) {
     const game = room.batailleNavale;
     if (!game || !Array.isArray(game.players)) {
       return `<div class="error-state"><strong>La bataille navale n’a pas pu être chargée.</strong><p>Actualise le salon pour retrouver la partie.</p><button type="button" data-dialog-close>${dialogCloseLabel()}</button></div>`;
     }
+
+    // Tant que les flottes ne sont pas validées, on affiche l'écran de placement.
+    if (game.phase === 'placing') return battlePlacementMarkup(room, game);
 
     const size = Number(game.gridSize) || 10;
     const letters = Array.isArray(game.columnLabels) ? game.columnLabels : Array.from({ length: size }, (_, i) => String.fromCharCode(65 + i));
@@ -2521,6 +2603,12 @@
     </div>`;
   }
 
+  const FLEET_SIZES = [5, 4, 3, 2];
+
+  function botDifficultyLabel(value) {
+    return { facile: 'facile', difficile: 'difficile' }[value] || 'normal';
+  }
+
   function roomDialog(room) {
     if (room.status === 'started') {
       let gameMarkup = '';
@@ -2579,9 +2667,15 @@
         <form class="bot-add-form" data-form="add-bots" data-room-id="${escapeHtml(room.id)}">
           <label for="bot-count">Ajouter</label>
           <select class="bot-count-select" id="bot-count" name="count"${slotsLeft === 0 ? ' disabled' : ''}>${botOptions}</select>
+          <label class="visually-hidden" for="bot-difficulty">Niveau des bots</label>
+          <select class="bot-count-select" id="bot-difficulty" name="difficulty"${slotsLeft === 0 ? ' disabled' : ''}>
+            <option value="facile"${room.botDifficulty === 'facile' ? ' selected' : ''}>Facile</option>
+            <option value="normal"${!room.botDifficulty || room.botDifficulty === 'normal' ? ' selected' : ''}>Normal</option>
+            <option value="difficile"${room.botDifficulty === 'difficile' ? ' selected' : ''}>Difficile</option>
+          </select>
           <button class="button button-primary bot-add-button" type="submit"${slotsLeft === 0 ? ' disabled' : ''}>Ajouter</button>
         </form>
-        <div class="bot-test-footer"><span>${botCount} bot${botCount === 1 ? '' : 's'} dans ce salon · ils joueront automatiquement au lancement.</span><button class="bot-remove-button" type="button" data-remove-bots="${escapeHtml(room.id)}"${botCount === 0 ? ' disabled' : ''}>Retirer les bots</button></div>
+        <div class="bot-test-footer"><span>${botCount} bot${botCount === 1 ? '' : 's'} dans ce salon (niveau ${escapeHtml(botDifficultyLabel(room.botDifficulty))}) · ils joueront automatiquement au lancement.</span><button class="bot-remove-button" type="button" data-remove-bots="${escapeHtml(room.id)}"${botCount === 0 ? ' disabled' : ''}>Retirer les bots</button></div>
       </section>` : '';
 
     return `
@@ -2780,6 +2874,13 @@
         body: { nickname: values.nickname, password: values.password || '' },
       });
       rememberRoomToken(roomId, data.playerToken);
+      // Le mot de passe du salon est retenu pour la session seulement :
+      // il est reproposé si on rouvre ce salon, et oublié à la fermeture du navigateur.
+      if (values.password) {
+        const salonPasswords = readSession(SALON_PASSWORDS_KEY, {});
+        salonPasswords[roomId] = String(values.password);
+        writeSession(SALON_PASSWORDS_KEY, salonPasswords);
+      }
       saveNickname(String(values.nickname).trim());
       closeDialog();
       showToast(`Tu as rejoint « ${data.room.title} » !`, 'success');
@@ -3190,14 +3291,16 @@
   async function submitAddBots(form) {
     const roomId = form.dataset.roomId;
     const token = roomTokens[roomId];
-    const count = Number(new FormData(form).get('count'));
+    const formValues = new FormData(form);
+    const count = Number(formValues.get('count'));
+    const difficulty = String(formValues.get('difficulty') || 'normal');
     showFormError(form, '');
     setFormPending(form, true, 'Ajout…');
     try {
       const data = await api(`/api/rooms/${encodeURIComponent(roomId)}/bots`, {
         method: 'POST',
         headers: { 'X-Player-Token': token },
-        body: { count },
+        body: { count, difficulty },
       });
       updateRoomDialog(data.room);
       showToast(`${data.addedCount} bot${data.addedCount === 1 ? '' : 's'} ajouté${data.addedCount === 1 ? '' : 's'} au salon.`, 'success');
@@ -3971,7 +4074,11 @@
       : `De ${game.minPlayers} à ${game.maxPlayers} joueurs pour ${game.name}.`;
   }
 
-  applyTheme(readPersistent(THEME_KEY, 'light'));
+  // Premier passage : on suit le réglage sombre du système. Dès que le joueur
+  // choisit, son choix est mémorisé et prime.
+  const storedTheme = readPersistent(THEME_KEY, '');
+  const prefersDark = typeof window.matchMedia === 'function' && window.matchMedia('(prefers-color-scheme: dark)').matches;
+  applyTheme(storedTheme === 'dark' || storedTheme === 'light' ? storedTheme : (prefersDark ? 'dark' : 'light'));
 
   document.addEventListener('click', (event) => {
     trackClick(event);
@@ -4142,6 +4249,55 @@
       performPuissance4Action(p4ColumnButton.dataset.roomId, 'play', {
         column: Number(p4ColumnButton.dataset.p4Column),
       });
+      return;
+    }
+
+    // --- Placement des navires (bataille navale) ---
+    const placeCell = event.target.closest('[data-place-row]');
+    if (placeCell && !placeCell.disabled) {
+      const roomId = dialog.dataset.roomId;
+      const selected = Number(placeCell.closest('.battle-placement-view')?.querySelector('.battle-ship-chip.is-active')?.dataset.placeSize || battlePlacingSize);
+      const size = FLEET_SIZES.includes(selected) ? selected : FLEET_SIZES[0];
+      performBattlePlacement(roomId, 'place', {
+        size,
+        row: Number(placeCell.dataset.placeRow),
+        column: Number(placeCell.dataset.placeColumn),
+        orientation: battleOrientation,
+      });
+      return;
+    }
+
+    const placeSizeButton = event.target.closest('[data-place-size]');
+    if (placeSizeButton) {
+      battlePlacingSize = Number(placeSizeButton.dataset.placeSize);
+      const snapshot = activeRoomSnapshot;
+      if (snapshot?.batailleNavale) dialogContent.innerHTML = batailleNavaleGameDialog(snapshot);
+      return;
+    }
+
+    const rotateButton = event.target.closest('[data-place-rotate]');
+    if (rotateButton) {
+      battleOrientation = battleOrientation === 'horizontal' ? 'vertical' : 'horizontal';
+      const snapshot = activeRoomSnapshot;
+      if (snapshot?.batailleNavale) dialogContent.innerHTML = batailleNavaleGameDialog(snapshot);
+      return;
+    }
+
+    const randomButton = event.target.closest('[data-place-random]');
+    if (randomButton) {
+      performBattlePlacement(dialog.dataset.roomId, 'random');
+      return;
+    }
+
+    const clearFleetButton = event.target.closest('[data-place-clear]');
+    if (clearFleetButton) {
+      performBattlePlacement(dialog.dataset.roomId, 'clear');
+      return;
+    }
+
+    const readyButton = event.target.closest('[data-place-ready]');
+    if (readyButton && !readyButton.disabled) {
+      performBattlePlacement(dialog.dataset.roomId, 'ready');
       return;
     }
 

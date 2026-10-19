@@ -1262,3 +1262,228 @@ test('Export complet et fermeture de tous les salons depuis l’administration',
   assert.equal(closed.data.count, 1);
   assert.equal((await request('/api/rooms')).data.rooms.length, 0);
 });
+
+test('Bataille navale en ligne : placement manuel, validation et premier tir au sort', async (t) => {
+  const { request } = await launchServer(t);
+  const unlocked = await request('/api/creator/unlock', { method: 'POST', body: { code: TEST_CREATOR_CODE } });
+  const created = await request('/api/rooms', {
+    method: 'POST',
+    headers: { 'X-Creator-Ticket': unlocked.data.ticket },
+    body: { title: 'Bataille de test', game: 'bataille-navale', maxPlayers: 2, nickname: 'Amiral' },
+  });
+  assert.equal(created.status, 201);
+  const roomId = created.data.room.id;
+  const hostToken = created.data.playerToken;
+  assert.equal(created.data.room.batailleNavale, null, 'aucune grille avant le lancement');
+
+  const guest = await request(`/api/rooms/${roomId}/join`, { method: 'POST', body: { nickname: 'Second' } });
+  const guestToken = guest.data.playerToken;
+
+  const start = await request(`/api/rooms/${roomId}/start`, {
+    method: 'POST',
+    headers: { 'X-Player-Token': hostToken },
+    body: {},
+  });
+  assert.equal(start.status, 200);
+  assert.equal(start.data.room.batailleNavale.phase, 'placing', 'la partie attend le placement');
+
+  // Placement manuel : un navire de 5 cases.
+  const placed = await request(`/api/rooms/${roomId}/bataille-navale/place`, {
+    method: 'POST',
+    headers: { 'X-Player-Token': hostToken },
+    body: { size: 5, row: 0, column: 0, orientation: 'horizontal' },
+  });
+  assert.equal(placed.status, 200);
+  assert.equal(placed.data.room.batailleNavale.placement.ships.length, 1);
+  assert.equal(placed.data.room.batailleNavale.placement.remaining.length, 4);
+  assert.equal(placed.data.room.batailleNavale.players.find((player) => player.isYou).isReady, false);
+
+  // Drapeau : le placement de l'adversaire reste invisible.
+  assert.equal(JSON.stringify(placed.data).includes('hostToken'), false);
+
+  const removed = await request(`/api/rooms/${roomId}/bataille-navale/remove`, {
+    method: 'POST',
+    headers: { 'X-Player-Token': hostToken },
+    body: { index: 0 },
+  });
+  assert.equal(removed.data.room.batailleNavale.placement.ships.length, 0);
+
+  const random = await request(`/api/rooms/${roomId}/bataille-navale/random`, {
+    method: 'POST',
+    headers: { 'X-Player-Token': hostToken },
+    body: {},
+  });
+  assert.equal(random.data.room.batailleNavale.placement.remaining.length, 0, 'les cinq navires sont posés');
+
+  const ready = await request(`/api/rooms/${roomId}/bataille-navale/ready`, {
+    method: 'POST',
+    headers: { 'X-Player-Token': hostToken },
+    body: {},
+  });
+  assert.equal(ready.data.room.batailleNavale.ownership, undefined);
+  assert.equal(ready.data.room.batailleNavale.phase, 'placing', 'il manque la flotte du second');
+  assert.equal(ready.data.room.batailleNavale.placement.ready, true);
+
+  await request(`/api/rooms/${roomId}/bataille-navale/random`, {
+    method: 'POST', headers: { 'X-Player-Token': guestToken }, body: {},
+  });
+  const battleReady = await request(`/api/rooms/${roomId}/bataille-navale/ready`, {
+    method: 'POST',
+    headers: { 'X-Player-Token': guestToken },
+    body: {},
+  });
+  assert.equal(battleReady.data.room.batailleNavale.phase, 'playing');
+  assert.ok(['Amiral', 'Second'].includes(battleReady.data.room.batailleNavale.currentPlayerName));
+
+  // On ne peut plus placer une fois la partie lancée.
+  assert.equal((await request(`/api/rooms/${roomId}/bataille-navale/place`, {
+    method: 'POST',
+    headers: { 'X-Player-Token': hostToken },
+    body: { size: 2, row: 5, column: 5 },
+  })).status, 409);
+
+  // Et un spectateur ne peut pas tirer.
+  const late = await request(`/api/rooms/${roomId}/join`, { method: 'POST', body: { nickname: 'Curieux' } });
+  assert.equal(late.data.room.isSpectator, true);
+
+  // Les spectateurs peuvent écrire : leur message porte une étiquette.
+  const spectatorMessage = await request(`/api/rooms/${roomId}/chat`, {
+    method: 'POST',
+    headers: { 'X-Player-Token': late.data.playerToken },
+    body: { message: 'Bonne chance à vous deux !' },
+  });
+  assert.equal(spectatorMessage.status, 201);
+  const chatEntries = spectatorMessage.data.room.chat;
+  const lastMessage = chatEntries[chatEntries.length - 1];
+  assert.equal(lastMessage.text, 'Bonne chance à vous deux !');
+  assert.equal(lastMessage.isSpectator, true, 'le message est marqué comme venant d’un spectateur');
+  const playerMessage = await request(`/api/rooms/${roomId}/chat`, {
+    method: 'POST',
+    headers: { 'X-Player-Token': hostToken },
+    body: { message: 'Merci !' },
+  });
+  const playerEntries = playerMessage.data.room.chat;
+  assert.equal(playerEntries[playerEntries.length - 1].isSpectator, false, 'les joueurs ne sont pas étiquetés spectateurs');
+  assert.equal((await request(`/api/rooms/${roomId}/bataille-navale/fire`, {
+    method: 'POST',
+    headers: { 'X-Player-Token': late.data.playerToken },
+    body: { row: 0, column: 0 },
+  })).status, 403);
+});
+
+test('Un joueur exclu ne peut pas revenir tant que la manche continue', async (t) => {
+  const { request } = await launchServer(t);
+  const unlocked = await request('/api/creator/unlock', { method: 'POST', body: { code: TEST_CREATOR_CODE } });
+  const created = await request('/api/rooms', {
+    method: 'POST',
+    headers: { 'X-Creator-Ticket': unlocked.data.ticket },
+    body: { title: 'Salon exclusion', game: 'uno', maxPlayers: 4, nickname: 'Chef' },
+  });
+  const roomId = created.data.room.id;
+  const hostToken = created.data.playerToken;
+  await request(`/api/rooms/${roomId}/join`, { method: 'POST', body: { nickname: 'Turbulent' } });
+  await request(`/api/rooms/${roomId}/join`, { method: 'POST', body: { nickname: 'Sage' } });
+
+  const started = await request(`/api/rooms/${roomId}/start`, {
+    method: 'POST',
+    headers: { 'X-Player-Token': hostToken },
+    body: {},
+  });
+  assert.equal(started.status, 200);
+  const guestId = started.data.room.players.find((player) => player.nickname === 'Turbulent').id;
+
+  const kicked = await request(`/api/rooms/${roomId}/players/${guestId}`, {
+    method: 'DELETE',
+    headers: { 'X-Player-Token': hostToken },
+  });
+  assert.equal(kicked.status, 200);
+  assert.equal(kicked.data.removed.nickname, 'Turbulent');
+
+  const retry = await request(`/api/rooms/${roomId}/join`, { method: 'POST', body: { nickname: 'Turbulent' } });
+  assert.equal(retry.status, 403);
+  assert.match(retry.data.error, /retiré de cette partie/i);
+
+  // La partie continue à deux : l'exclusion tient toujours.
+  const room = await request(`/api/rooms/${roomId}`, { headers: { 'X-Player-Token': hostToken } });
+  assert.equal(room.data.room.uno.phase, 'playing');
+  assert.equal(room.data.room.banCount, 1);
+});
+
+test('Une exclusion tombe quand la manche est terminée', async (t) => {
+  const { request } = await launchServer(t);
+  const unlocked = await request('/api/creator/unlock', { method: 'POST', body: { code: TEST_CREATOR_CODE } });
+  const created = await request('/api/rooms', {
+    method: 'POST',
+    headers: { 'X-Creator-Ticket': unlocked.data.ticket },
+    body: { title: 'Exclusion terminée', game: 'morpion', maxPlayers: 2, nickname: 'Chef' },
+  });
+  const roomId = created.data.room.id;
+  const hostToken = created.data.playerToken;
+  const guest = await request(`/api/rooms/${roomId}/join`, { method: 'POST', body: { nickname: 'Turbulent' } });
+  const guestId = guest.data.room.players.find((player) => player.nickname === 'Turbulent').id;
+  await request(`/api/rooms/${roomId}/start`, { method: 'POST', headers: { 'X-Player-Token': hostToken }, body: {} });
+
+  const kicked = await request(`/api/rooms/${roomId}/players/${guestId}`, {
+    method: 'DELETE',
+    headers: { 'X-Player-Token': hostToken },
+  });
+  assert.equal(kicked.status, 200);
+  const room = await request(`/api/rooms/${roomId}`, { headers: { 'X-Player-Token': hostToken } });
+  assert.equal(room.data.room.morpion.phase, 'finished', 'le forfait termine la manche');
+  assert.equal(room.data.room.banCount, 1);
+
+  const comeback = await request(`/api/rooms/${roomId}/join`, { method: 'POST', body: { nickname: 'Turbulent' } });
+  assert.equal(comeback.status, 201, 'il peut revenir une fois la manche terminée');
+  assert.equal(comeback.data.room.isSpectator, true);
+  const after = await request(`/api/rooms/${roomId}`, { headers: { 'X-Player-Token': hostToken } });
+  assert.equal(after.data.room.banCount, 0, 'l’exclusion est levée');
+});
+
+test('Le niveau des bots est enregistré et respecté', async (t) => {
+  const { request } = await launchServer(t);
+  const unlocked = await request('/api/creator/unlock', { method: 'POST', body: { code: TEST_CREATOR_CODE } });
+  const created = await request('/api/rooms', {
+    method: 'POST',
+    headers: { 'X-Creator-Ticket': unlocked.data.ticket },
+    body: { title: 'Bots', game: 'morpion', maxPlayers: 2, nickname: 'Chef' },
+  });
+  const roomId = created.data.room.id;
+  const hostToken = created.data.playerToken;
+  assert.equal(created.data.room.botDifficulty, 'normal');
+
+  const bots = await request(`/api/rooms/${roomId}/bots`, {
+    method: 'POST',
+    headers: { 'X-Player-Token': hostToken },
+    body: { count: 1, difficulty: 'difficile' },
+  });
+  assert.equal(bots.status, 200);
+  assert.equal(bots.data.room.botDifficulty, 'difficile');
+
+  const invalid = await request(`/api/rooms/${roomId}/bots`, {
+    method: 'POST',
+    headers: { 'X-Player-Token': hostToken },
+    body: { count: 0, difficulty: 'imbattable' },
+  });
+  assert.equal(bots.data.room.botDifficulty, 'difficile', 'un niveau inconnu ne casse rien');
+  assert.ok([400, 409].includes(invalid.status));
+});
+
+test('Supprimer son compte efface aussi son journal et son historique', async (t) => {
+  const { request } = await launchServer(t);
+  const account = await request('/api/accounts/register', { method: 'POST', body: { nickname: 'Effacé', password: 'abc123' } });
+  const headers = { 'X-Account-Token': account.data.token };
+  await request('/api/presence', { method: 'POST', headers, body: { nickname: 'Effacé', activity: 'Accueil' } });
+
+  const admin = await request('/api/admin/login', { method: 'POST', body: { code: TEST_CREATOR_CODE } });
+  const adminHeaders = { 'X-Admin-Token': admin.data.token };
+  const before = await request('/api/admin/activity', { headers: adminHeaders });
+  assert.ok(before.data.entries.some((entry) => entry.nickname === 'Effacé'));
+
+  const deleted = await request('/api/accounts/me', { method: 'DELETE', headers, body: { password: 'abc123' } });
+  assert.equal(deleted.status, 200);
+
+  const after = await request('/api/admin/activity', { headers: adminHeaders });
+  assert.equal(after.data.entries.some((entry) => entry.nickname === 'Effacé'), false, 'son journal est effacé');
+  const exported = await request('/api/admin/export?format=json', { headers: adminHeaders });
+  assert.equal(exported.text.includes('"Effacé"'), false, 'aucune trace dans l’export');
+});

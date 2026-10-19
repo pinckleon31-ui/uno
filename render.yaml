@@ -1,0 +1,22 @@
+# Déploiement en un clic sur Render (https://render.com).
+# Le service écoute sur $PORT et range ses données dans $DATA_DIR.
+services:
+  - type: web
+    name: recre-jeux
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: free
+    region: frankfurt
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      - key: CREATOR_CODE
+        sync: false # à saisir dans le tableau de bord, jamais dans le dépôt
+      - key: DATA_DIR
+        value: /app/.data
+    # Les salons et comptes sont écrits dans DATA_DIR. Sur un disque persistant
+    # (offre payante), décommente ce bloc pour qu'ils survivent aux redéploiements.
+    # disk:
+    #   name: recre-data
+    #   mountPath: /app/.data
+    #   sizeGB: 1
